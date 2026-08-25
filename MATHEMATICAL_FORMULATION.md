@@ -4,7 +4,7 @@ This document describes the planar rocket model and the finite-horizon optimal c
 
 ## 1. Coordinates, state, and input
 
-The inertial frame uses horizontal coordinate (p_x) and upward vertical coordinate (p_z). The angle (	heta=0) denotes a vertical rocket, and positive (	heta) tilts its longitudinal axis toward positive (x). The thrust gimbal angle (delta) is measured relative to that axis, so the thrust direction in the inertial frame is (	heta+delta).
+The inertial frame uses horizontal coordinate $p_x$ and upward vertical coordinate $p_z$. The angle $\theta=0$ denotes a vertical rocket, and positive $\theta$ tilts its longitudinal axis toward positive $x$. The thrust gimbal angle $\delta$ is measured relative to that axis, so the thrust direction in the inertial frame is $\theta+\delta$.
 
 The state and control vectors are
 
@@ -20,11 +20,17 @@ T & \delta
 \end{bmatrix}^{\mathsf T},
 $$
 
-where (T\geq 0) is thrust magnitude and (omega) is pitch rate.
+where $T\geq 0$ is thrust magnitude and $\omega$ is pitch rate.
+
+In the interactive simulator, position and attitude are randomized at reset, while every velocity state starts from rest:
+
+$$
+v_x(0)=0,\qquad v_z(0)=0,\qquad \omega(0)=0.
+$$
 
 ### 1.1 Cylinder inertia model
 
-The rocket body is approximated by a uniform solid cylinder of mass (m), radius (r), and height (h_b). Its pitch moment of inertia about a transverse axis through the center of mass is
+The rocket body is approximated by a uniform solid cylinder of mass $m$, radius $r$, and height $h_b$. Its pitch moment of inertia about a transverse axis through the center of mass is
 
 $$
 I = \frac{m}{12}\left(3r^2+h_b^2\right).
@@ -34,7 +40,7 @@ This relation is why inertia is displayed as a derived, read-only quantity in th
 
 ## 2. Continuous-time nonlinear model
 
-Let (g) be gravitational acceleration, (c_d) the translational linear-drag coefficient, (c_\omega) the angular-damping coefficient, and (l) the engine lever arm. Define
+Let $g$ be gravitational acceleration, $c_d$ the translational linear-drag coefficient, $c_\omega$ the angular-damping coefficient, and $l$ the engine lever arm. Define
 
 $$
 \phi = \theta+\delta.
@@ -68,7 +74,7 @@ The torque sign is a convention of this planar model: positive gimbal angle prod
 
 ## 3. Discrete-time prediction model
 
-For sample time (\Delta t), accelerations are evaluated at ((x_k,u_k)) and assumed constant over one sample. The discrete dynamics (x_{k+1}=f_d(x_k,u_k)) are
+For sample time $\Delta t$, accelerations are evaluated at $(x_k,u_k)$ and assumed constant over one sample. The discrete dynamics $x_{k+1}=f_d(x_k,u_k)$ are
 
 $$
 \begin{aligned}
@@ -85,7 +91,7 @@ The same nonlinear discrete model is used by both the MPC prediction and the sim
 
 ## 4. Reference state
 
-For landing target (p_x^\star), the reference is constant over the entire horizon:
+For landing target $p_x^\star$, the reference is constant over the entire horizon:
 
 $$
 x^{\mathrm{ref}} =
@@ -98,7 +104,7 @@ Thus the desired terminal condition is the requested horizontal location, zero a
 
 ## 5. Finite-horizon OCP
 
-At each MPC update, with measured state (\hat{x}), the controller optimizes a sequence
+At each MPC update, with measured state $\hat{x}$, the controller optimizes a sequence
 
 $$
 U=\{u_0,u_1,\ldots,u_{N-1}\}.
@@ -148,7 +154,7 @@ $$
 \end{cases}
 $$
 
-where (\gamma_f) is the GUI parameter **Terminal scale**. The state-tracking cost is
+where $\gamma_f$ is the GUI parameter **Terminal scale**. The state-tracking cost is
 
 $$
 J_x=\sum_{k=1}^{N}\beta_k\gamma_k\,e_k^{\mathsf T}\bar Qe_k.
@@ -156,7 +162,7 @@ $$
 
 ### 5.2 Fuel and input-smoothing costs
 
-Let (T_{\max}) and (\delta_{\max}) denote the input limits, and let (u_{-1}=u_{\mathrm{prev}}) be the control applied at the preceding MPC sample. The input cost is
+Let $T_{\max}$ and $\delta_{\max}$ denote the input limits, and let $u_{-1}=u_{\mathrm{prev}}$ be the control applied at the preceding MPC sample. The input cost is
 
 $$
 J_u=\sum_{k=0}^{N-1}
@@ -208,11 +214,11 @@ $$
 v_{x,N}=0.
 $$
 
-This constrains the terminal velocity vector to have no horizontal component. It does not directly constrain (v_{z,N}); the zero-velocity reference in (J_x) drives (v_{z,N}) toward zero. When the toggle is off, (v_{x,N}) is regulated only by the cost.
+This constrains the terminal velocity vector to have no horizontal component. It does not directly constrain $v_{z,N}$; the zero-velocity reference in $J_x$ drives $v_{z,N}$ toward zero. When the toggle is off, $v_{x,N}$ is regulated only by the cost.
 
 ## 6. SQP approximation used in the controller
 
-For a nominal trajectory ((\bar x_k,\bar u_k)), the dynamics are linearized as
+For a nominal trajectory $(\bar x_k,\bar u_k)$, the dynamics are linearized as
 
 $$
 \Delta x_{k+1}=A_k\Delta x_k+B_k\Delta u_k,
@@ -226,7 +232,7 @@ A_k=\left.\frac{\partial f_d}{\partial x}\right|_{\bar x_k,\bar u_k},
 B_k=\left.\frac{\partial f_d}{\partial u}\right|_{\bar x_k,\bar u_k}.
 $$
 
-Since the measured initial state is fixed, (\Delta x_0=0). State sensitivities with respect to the stacked control step
+Since the measured initial state is fixed, $\Delta x_0=0$. State sensitivities with respect to the stacked control step
 
 $$
 d=\begin{bmatrix}\Delta u_0^{\mathsf T}&\cdots&\Delta u_{N-1}^{\mathsf T}\end{bmatrix}^{\mathsf T}

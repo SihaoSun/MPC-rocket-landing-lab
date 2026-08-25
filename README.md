@@ -16,7 +16,7 @@ Then visit `http://localhost:8000`.
 
 ## Features
 
-- Random initial position, velocity, and tilt;
+- Random initial position and tilt, always with zero translational and angular velocity;
 - Start, pause, reset, and randomize controls;
 - Configurable mass, cylinder radius, body height, engine lever arm, drag, maximum thrust, and gimbal limit;
 - Moment of inertia derived automatically from the cylinder model;
@@ -44,9 +44,9 @@ The implementation uses no optimization library. Each MPC update:
 The deterministic regression scenario is
 
 ```text
-Initial state: px=4.5 m, pz=8.0 m, vx=-0.2 m/s, vz=-0.7 m/s, theta=12 deg
-Result: 6.84 s soft landing, 0.04 m position error,
-        0.08 m/s touchdown speed, 0.1 deg tilt
+Initial state: px=4.5 m, pz=8.0 m, vx=0, vz=0, theta=12 deg, omega=0
+Result: 7.56 s soft landing, 0.06 m position error,
+        0.09 m/s touchdown speed, 0.2 deg tilt
 ```
 
 Open `index.html?verify=1` to reproduce it. The ordinary page uses a random initial state. Extreme parameters, an excessively short horizon, or insufficient maximum thrust can make landing infeasible; this is useful for demonstrating constraint activity and MPC tuning.

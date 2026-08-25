@@ -69,10 +69,10 @@
     return [
       target + side * (2.8 + Math.random() * 4.2),
       7.3 + Math.random() * 3.2,
-      -side * (0.05 + Math.random() * 0.55),
-      -0.35 - Math.random() * 0.65,
+      0,
+      0,
       rad(-18 + Math.random() * 36),
-      rad(-3 + Math.random() * 6)
+      0
     ];
   }
 
@@ -438,7 +438,7 @@
     renderAll();
   }
   if (launchOptions.get('verify') === '1') {
-    state.initial = [4.5, 8, -0.2, -0.7, rad(12), 0];
+    state.initial = [4.5, 8, 0, 0, rad(12), 0];
     resetSimulation(false);
     for (let k = 0; k < 220 && !state.finished; k++) simulationStep();
     renderAll();
