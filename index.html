@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="description" content="基于手写 SQP 的二维火箭着陆 MPC 可视化演示" />
+  <meta name="description" content="Interactive 2D rocket landing MPC demo with a handwritten SQP solver" />
   <title>SQP / MPC · Rocket Landing Lab</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
@@ -19,9 +19,9 @@
       </div>
       <div class="header-actions">
         <span id="solverBadge" class="status-badge"><i></i> SOLVER READY</span>
-        <button id="randomizeBtn" class="btn secondary">随机初态</button>
-        <button id="resetBtn" class="btn secondary">重置</button>
-        <button id="runBtn" class="btn primary">▶ 开始仿真</button>
+        <button id="randomizeBtn" class="btn secondary">Randomize</button>
+        <button id="resetBtn" class="btn secondary">Reset</button>
+        <button id="runBtn" class="btn primary">▶ Start</button>
       </div>
     </header>
 
@@ -30,22 +30,24 @@
         <div class="panel-heading">
           <div>
             <span class="eyebrow">CONTROL DECK</span>
-            <h2>参数配置</h2>
+            <h2>Configuration</h2>
           </div>
-          <button id="defaultsBtn" class="icon-btn" title="恢复默认参数">↺</button>
+          <button id="defaultsBtn" class="icon-btn" title="Restore default parameters">↺</button>
         </div>
 
         <section class="control-section">
           <button class="section-title" aria-expanded="true">
-            <span><b>01</b> 火箭模型</span><i>⌃</i>
+            <span><b>01</b> Rocket model</span><i>⌃</i>
           </button>
           <div class="section-body grid-2">
-            <label>质量 <span>kg</span><input id="mass" type="number" min="150" max="3000" step="10" value="620" /></label>
-            <label>惯量 <span>kg·m²</span><input id="inertia" type="number" min="100" max="10000" step="10" value="920" /></label>
-            <label>发动机力臂 <span>m</span><input id="lever" type="number" min="0.2" max="5" step="0.1" value="2.2" /></label>
-            <label>线性阻力 <span>N·s/m</span><input id="drag" type="number" min="0" max="100" step="1" value="12" /></label>
-            <label>最大推力 <span>kN</span><input id="maxThrust" type="number" min="5" max="80" step="0.5" value="18" /></label>
-            <label>摆角上限 <span>deg</span><input id="maxGimbal" type="number" min="2" max="35" step="1" value="18" /></label>
+            <label>Mass <span>kg</span><input id="mass" type="number" min="150" max="3000" step="10" value="620" /></label>
+            <label>Cylinder radius <span>m</span><input id="radius" type="number" min="0.2" max="3" step="0.05" value="0.85" /></label>
+            <label>Body height <span>m</span><input id="bodyHeight" type="number" min="1" max="12" step="0.1" value="4" /></label>
+            <label title="I = m(3r²+h²)/12">Derived inertia <span>kg·m²</span><input id="inertia" class="derived-input" type="text" value="938.7" readonly /></label>
+            <label>Engine lever arm <span>m</span><input id="lever" type="number" min="0.2" max="5" step="0.1" value="2.2" /></label>
+            <label>Linear drag <span>N·s/m</span><input id="drag" type="number" min="0" max="100" step="1" value="12" /></label>
+            <label>Maximum thrust <span>kN</span><input id="maxThrust" type="number" min="5" max="80" step="0.5" value="18" /></label>
+            <label>Gimbal limit <span>deg</span><input id="maxGimbal" type="number" min="2" max="35" step="1" value="18" /></label>
           </div>
         </section>
 
@@ -54,51 +56,56 @@
             <span><b>02</b> MPC / SQP</span><i>⌃</i>
           </button>
           <div class="section-body grid-2">
-            <label>预测步数 <span>N</span><input id="horizon" type="number" min="12" max="70" step="1" value="36" /></label>
-            <label>采样周期 <span>s</span><input id="dt" type="number" min="0.05" max="0.3" step="0.01" value="0.12" /></label>
-            <label>SQP 迭代 <span>次</span><input id="sqpIterations" type="number" min="1" max="8" step="1" value="4" /></label>
-            <label>QP 迭代 <span>次</span><input id="qpIterations" type="number" min="8" max="100" step="1" value="42" /></label>
-            <label>终端倍率 <span>×</span><input id="terminalScale" type="number" min="1" max="80" step="1" value="24" /></label>
-            <label>目标横坐标 <span>m</span><input id="targetX" type="number" min="-8" max="8" step="0.5" value="0" /></label>
+            <label>Prediction steps <span>N</span><input id="horizon" type="number" min="12" max="70" step="1" value="36" /></label>
+            <label>Sample time <span>s</span><input id="dt" type="number" min="0.05" max="0.3" step="0.01" value="0.12" /></label>
+            <label>SQP iterations <span>count</span><input id="sqpIterations" type="number" min="1" max="8" step="1" value="4" /></label>
+            <label>QP iterations <span>count</span><input id="qpIterations" type="number" min="8" max="100" step="1" value="42" /></label>
+            <label>Terminal scale <span>×</span><input id="terminalScale" type="number" min="1" max="80" step="1" value="24" /></label>
+            <label>Target horizontal pos. <span>m</span><input id="targetX" type="number" min="-8" max="8" step="0.5" value="0" /></label>
           </div>
+          <label class="constraint-toggle">
+            <span class="toggle-copy"><b>Vertical terminal velocity</b><small>Enforce the SQP equality v<sub>x,N</sub> = 0</small></span>
+            <input id="terminalVertical" type="checkbox" checked />
+            <i aria-hidden="true"></i>
+          </label>
         </section>
 
         <section class="control-section weights-section">
           <button class="section-title" aria-expanded="true">
-            <span><b>03</b> 代价权重</span><i>⌃</i>
+            <span><b>03</b> Cost weights</span><i>⌃</i>
           </button>
           <div class="section-body">
-            <label class="slider-label"><span>位置 q<sub>p</sub></span><output id="wPosOut">18</output><input id="wPos" type="range" min="0" max="40" step="1" value="18" /></label>
-            <label class="slider-label"><span>速度 q<sub>v</sub></span><output id="wVelOut">14</output><input id="wVel" type="range" min="0" max="40" step="1" value="14" /></label>
-            <label class="slider-label"><span>姿态 q<sub>θ</sub></span><output id="wAngleOut">24</output><input id="wAngle" type="range" min="0" max="50" step="1" value="24" /></label>
-            <label class="slider-label"><span>角速度 q<sub>ω</sub></span><output id="wOmegaOut">6</output><input id="wOmega" type="range" min="0" max="30" step="1" value="6" /></label>
-            <label class="slider-label"><span>燃料 r<sub>T</sub></span><output id="wFuelOut">0.18</output><input id="wFuel" type="range" min="0" max="1" step="0.02" value="0.18" /></label>
-            <label class="slider-label"><span>输入平滑 r<sub>Δu</sub></span><output id="wSmoothOut">1.2</output><input id="wSmooth" type="range" min="0" max="5" step="0.1" value="1.2" /></label>
+            <label class="slider-label"><span>Position q<sub>p</sub></span><output id="wPosOut">18</output><input id="wPos" type="range" min="0" max="40" step="1" value="18" /></label>
+            <label class="slider-label"><span>Velocity q<sub>v</sub></span><output id="wVelOut">14</output><input id="wVel" type="range" min="0" max="40" step="1" value="14" /></label>
+            <label class="slider-label"><span>Attitude q<sub>θ</sub></span><output id="wAngleOut">24</output><input id="wAngle" type="range" min="0" max="50" step="1" value="24" /></label>
+            <label class="slider-label"><span>Angular rate q<sub>ω</sub></span><output id="wOmegaOut">6</output><input id="wOmega" type="range" min="0" max="30" step="1" value="6" /></label>
+            <label class="slider-label"><span>Fuel r<sub>T</sub></span><output id="wFuelOut">0.18</output><input id="wFuel" type="range" min="0" max="1" step="0.02" value="0.18" /></label>
+            <label class="slider-label"><span>Input smoothing r<sub>Δu</sub></span><output id="wSmoothOut">1.2</output><input id="wSmooth" type="range" min="0" max="5" step="0.1" value="1.2" /></label>
           </div>
         </section>
 
         <div class="reference-card">
-          <span>常值参考 x<sub>ref</sub></span>
+          <span>Constant reference x<sub>ref</sub></span>
           <code>[x*, 0, 0, 0, 0, 0]</code>
-          <p>位置、速度和姿态参考在整个预测域保持不变，终端项使用更高权重。</p>
+          <p>Position, velocity, and attitude references remain constant over the horizon, with a stronger terminal weight.</p>
         </div>
       </aside>
 
       <section class="dashboard">
         <div class="telemetry-strip">
-          <div><span>高度</span><strong id="altitudeValue">—</strong><small>m</small></div>
-          <div><span>水平误差</span><strong id="xErrorValue">—</strong><small>m</small></div>
-          <div><span>垂直速度</span><strong id="vzValue">—</strong><small>m/s</small></div>
-          <div><span>倾角</span><strong id="angleValue">—</strong><small>deg</small></div>
-          <div><span>SQP 代价</span><strong id="costValue">—</strong><small>J</small></div>
-          <div><span>求解耗时</span><strong id="solveValue">—</strong><small>ms</small></div>
+          <div><span>Altitude</span><strong id="altitudeValue">—</strong><small>m</small></div>
+          <div><span>Horizontal error</span><strong id="xErrorValue">—</strong><small>m</small></div>
+          <div><span>Vertical velocity</span><strong id="vzValue">—</strong><small>m/s</small></div>
+          <div><span>Tilt angle</span><strong id="angleValue">—</strong><small>deg</small></div>
+          <div><span>SQP cost</span><strong id="costValue">—</strong><small>J</small></div>
+          <div><span>Solve time</span><strong id="solveValue">—</strong><small>ms</small></div>
         </div>
 
         <div class="viz-grid">
           <article class="card flight-card">
             <div class="card-header">
-              <div><span class="eyebrow">FLIGHT VIEW</span><h3>闭环着陆轨迹</h3></div>
-              <div class="legend"><span class="actual">实际</span><span class="predicted">MPC 预测</span><span class="target">目标</span></div>
+              <div><span class="eyebrow">FLIGHT VIEW</span><h3>Closed-loop landing trajectory</h3></div>
+              <div class="legend"><span class="actual">Actual</span><span class="predicted">MPC prediction</span><span class="target">Target</span></div>
             </div>
             <div class="canvas-wrap flight-wrap">
               <canvas id="flightCanvas"></canvas>
@@ -112,7 +119,7 @@
 
           <article class="card input-card">
             <div class="card-header">
-              <div><span class="eyebrow">CONTROL INPUT</span><h3>推力 T</h3></div>
+              <div><span class="eyebrow">CONTROL INPUT</span><h3>Thrust T</h3></div>
               <strong id="thrustNow">0.0 kN</strong>
             </div>
             <div class="canvas-wrap chart-wrap"><canvas id="thrustCanvas"></canvas></div>
@@ -120,7 +127,7 @@
 
           <article class="card input-card">
             <div class="card-header">
-              <div><span class="eyebrow">CONTROL INPUT</span><h3>推力摆角 δ</h3></div>
+              <div><span class="eyebrow">CONTROL INPUT</span><h3>Thrust gimbal δ</h3></div>
               <strong id="gimbalNow">0.0°</strong>
             </div>
             <div class="canvas-wrap chart-wrap"><canvas id="gimbalCanvas"></canvas></div>
@@ -128,17 +135,19 @@
 
           <article class="card diagnostics-card">
             <div class="card-header">
-              <div><span class="eyebrow">SQP DIAGNOSTICS</span><h3>实时求解状态</h3></div>
+              <div><span class="eyebrow">SQP DIAGNOSTICS</span><h3>Real-time solver status</h3></div>
               <span id="convergencePill" class="pill">WAITING</span>
             </div>
             <div class="diagnostics-grid">
-              <div><span>QP 投影梯度</span><strong id="qpResidual">—</strong></div>
-              <div><span>线搜索步长</span><strong id="lineAlpha">—</strong></div>
-              <div><span>预测末端误差</span><strong id="terminalError">—</strong></div>
-              <div><span>约束激活</span><strong id="activeConstraints">—</strong></div>
+              <div><span>QP projected residual</span><strong id="qpResidual">—</strong></div>
+              <div><span>Line-search step</span><strong id="lineAlpha">—</strong></div>
+              <div><span>Predicted terminal error</span><strong id="terminalError">—</strong></div>
+              <div><span>Active box constraints</span><strong id="activeConstraints">—</strong></div>
+              <div><span>Terminal horizontal speed</span><strong id="verticalConstraintResidual">—</strong></div>
+              <div><span>Vertical-velocity constraint</span><strong id="verticalConstraintState">—</strong></div>
             </div>
             <div class="cost-track"><i id="costTrackFill"></i></div>
-            <p id="solverMessage">点击“开始仿真”，MPC 将在每个采样时刻重新求解。</p>
+            <p id="solverMessage">Press Start. The MPC problem is solved again at every sample.</p>
           </article>
         </div>
       </section>

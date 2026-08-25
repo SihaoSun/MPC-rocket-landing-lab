@@ -1,103 +1,60 @@
-# 2D Rocket Landing：手写 SQP + 非线性 MPC
+# 2D Rocket Landing: Handwritten SQP + Nonlinear MPC
 
-这是一个零依赖、可直接在浏览器运行的二维火箭软着陆演示。火箭从随机位置、速度和倾角出发，MPC 在每个采样时刻重新求解推力 `T` 与推力摆角 `δ`，目标是在指定横坐标以竖直姿态和零速度着陆。
+A zero-dependency browser demonstration of planar rocket landing. The rocket starts from a randomized position, velocity, and attitude. At every sample, nonlinear MPC solves for thrust magnitude `T` and gimbal angle `δ` to land at a selected horizontal position with zero velocity and an upright attitude.
 
-## 运行
+For the full model and OCP equations, see [MATHEMATICAL_FORMULATION.md](./MATHEMATICAL_FORMULATION.md).
 
-最简单的方式是直接双击 `index.html`。也可以在项目目录启动本地静态服务器：
+## Run
+
+Open `index.html` directly, or start a local static server in this directory:
 
 ```bash
 python3 -m http.server 8000
 ```
 
-然后打开 `http://localhost:8000`。
+Then visit `http://localhost:8000`.
 
-界面支持：
+## Features
 
-- 随机初始位置、速度和倾角；
-- 开始、暂停、重置和重新随机化；
-- 在线修改质量、惯量、发动机力臂、阻力、最大推力和最大摆角；
-- 在线修改 horizon、采样周期、SQP/QP 迭代次数、终端权重及全部代价权重；
-- 同时显示实际轨迹与当前 MPC 预测轨迹；
-- 显示实际/预测输入、推力及摆角的可行域和约束边界；
-- 显示代价下降、线搜索步长、QP 残差、预测末端误差和激活约束数。
+- Random initial position, velocity, and tilt;
+- Start, pause, reset, and randomize controls;
+- Configurable mass, cylinder radius, body height, engine lever arm, drag, maximum thrust, and gimbal limit;
+- Moment of inertia derived automatically from the cylinder model;
+- Configurable horizon, sample time, SQP/QP iterations, terminal scale, and cost weights;
+- Optional terminal vertical-velocity equality constraint;
+- Simultaneous actual and MPC-predicted trajectories;
+- Actual/predicted input histories with visible feasible regions and constraint boundaries;
+- Live cost reduction, line-search step, QP residual, terminal error, and active-constraint diagnostics.
 
-## 模型
+## Implementation
 
-状态和输入定义为
+The implementation uses no optimization library. Each MPC update:
 
-```text
-x = [p_x, p_z, v_x, v_z, θ, ω]
-u = [T, δ]
-```
+1. Rolls out the nonlinear dynamics with the current input sequence;
+2. Computes analytic discrete-time Jacobians `A_k = ∂f/∂x` and `B_k = ∂f/∂u`;
+3. Recursively condenses state sensitivities with respect to all controls;
+4. Constructs a dense Gauss–Newton QP;
+5. Solves the box-constrained QP using handwritten projected coordinate descent;
+6. Handles the optional terminal equality with augmented-Lagrangian iterations and weighted hyperplane projection;
+7. Uses backtracking line search on the nonlinear merit function;
+8. Applies the first input and shifts the solution to warm-start the next sample.
 
-连续时间动力学为
+## Validation
 
-```text
-ṗ_x = v_x
-ṗ_z = v_z
-v̇_x = T/m · sin(θ + δ) - c_d/m · v_x
-v̇_z = T/m · cos(θ + δ) - g - c_d/m · v_z
-θ̇   = ω
-ω̇   = -lT/I · sin(δ) - c_ω/I · ω
-```
-
-代码使用常加速度离散化。输入盒约束为
+The deterministic regression scenario is
 
 ```text
-0 ≤ T ≤ T_max
--δ_max ≤ δ ≤ δ_max
+Initial state: px=4.5 m, pz=8.0 m, vx=-0.2 m/s, vz=-0.7 m/s, theta=12 deg
+Result: 6.84 s soft landing, 0.04 m position error,
+        0.08 m/s touchdown speed, 0.1 deg tilt
 ```
 
-## MPC 代价
+Open `index.html?verify=1` to reproduce it. The ordinary page uses a random initial state. Extreme parameters, an excessively short horizon, or insufficient maximum thrust can make landing infeasible; this is useful for demonstrating constraint activity and MPC tuning.
 
-整个预测域使用用户建议的常值参考：
+## Files
 
-```text
-x_ref = [p_x,target, 0, 0, 0, 0, 0]
-```
-
-代价包含位置、速度、姿态、角速度、燃料和输入变化率：
-
-```text
-J = Σ ||x_k - x_ref||²_Q(k)
-  + Σ r_T (T_k / T_max)²
-  + Σ ||u_k - u_(k-1)||²_R
-  + terminal_scale · ||x_N - x_ref||²_Q
-```
-
-阶段状态权重沿预测域平滑增大，最后一步再乘以终端倍率。地下预测会收到额外的软惩罚，避免优化器通过“穿地”降低位置代价。
-
-## 手写 SQP 实现
-
-核心实现在 [`mpc.js`](./mpc.js)，没有调用任何优化库。
-
-每次 MPC 求解执行：
-
-1. 用当前输入序列滚动非线性动力学；
-2. 解析计算每一步的离散雅可比 `A_k = ∂f/∂x`、`B_k = ∂f/∂u`；
-3. 递推状态对整段控制序列的灵敏度；
-4. 用 Gauss–Newton 近似构造稠密 QP；
-5. 用手写投影坐标下降求解带盒约束的 QP；
-6. 对 SQP 步长执行回溯线搜索，只接受能降低真实非线性代价的更新；
-7. 应用第一个控制量，并把解左移作为下一时刻的 warm start。
-
-`app.js` 只负责闭环仿真、接地判断和 Canvas 绘图；数值求解器与 GUI 相互独立。
-
-## 验证
-
-已用 Chrome 无头模式运行固定回归场景：
-
-```text
-初态: p_x=4.5 m, p_z=8.0 m, v_x=-0.2 m/s, v_z=-0.7 m/s, θ=12°
-结果: 7.08 s 软着陆，位置误差 0.14 m，接地速度 0.16 m/s，倾角 1.0°
-```
-
-打开 `index.html?verify=1` 可在本机复现这一确定性场景。默认页面仍使用随机初态；极端参数、过短 horizon 或不足的最大推力可能导致着陆失败，这正是演示输入约束和 MPC 调参效果的一部分。
-
-## 文件
-
-- `index.html`：GUI 结构与全部可调参数；
-- `styles.css`：响应式界面；
-- `mpc.js`：动力学、代价、SQP、QP 和 warm start；
-- `app.js`：闭环仿真与可视化。
+- `index.html`: GUI structure and configurable parameters;
+- `styles.css`: responsive visual design;
+- `mpc.js`: dynamics, objective, SQP, QP, and warm start;
+- `app.js`: closed-loop simulation and Canvas visualization;
+- `MATHEMATICAL_FORMULATION.md`: mathematical model and OCP derivation.

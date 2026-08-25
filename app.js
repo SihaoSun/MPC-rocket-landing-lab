@@ -24,7 +24,7 @@
   };
 
   const defaultValues = {
-    mass: 620, inertia: 920, lever: 2.2, drag: 12, maxThrust: 18, maxGimbal: 18,
+    mass: 620, radius: 0.85, bodyHeight: 4, lever: 2.2, drag: 12, maxThrust: 18, maxGimbal: 18,
     horizon: 36, dt: 0.12, sqpIterations: 4, qpIterations: 42, terminalScale: 24, targetX: 0,
     wPos: 18, wVel: 14, wAngle: 24, wOmega: 6, wFuel: 0.18, wSmooth: 1.2
   };
@@ -32,9 +32,16 @@
   let deferredSolve;
 
   function readConfig() {
+    const mass = clamp(+$('mass').value || defaultValues.mass, 150, 3000);
+    const radius = clamp(+$('radius').value || defaultValues.radius, 0.2, 3);
+    const bodyHeight = clamp(+$('bodyHeight').value || defaultValues.bodyHeight, 1, 12);
+    const inertia = mass * (3 * radius * radius + bodyHeight * bodyHeight) / 12;
+    $('inertia').value = inertia.toFixed(1);
     return {
-      mass: clamp(+$('mass').value || defaultValues.mass, 150, 3000),
-      inertia: clamp(+$('inertia').value || defaultValues.inertia, 100, 10000),
+      mass,
+      radius,
+      bodyHeight,
+      inertia,
       lever: clamp(+$('lever').value || defaultValues.lever, 0.2, 5),
       drag: clamp(+$('drag').value || 0, 0, 100),
       angularDamping: 85,
@@ -51,7 +58,8 @@
       wAngle: +$('wAngle').value,
       wOmega: +$('wOmega').value,
       wFuel: +$('wFuel').value,
-      wSmooth: +$('wSmooth').value
+      wSmooth: +$('wSmooth').value,
+      terminalVertical: $('terminalVertical').checked
     };
   }
 
@@ -133,15 +141,15 @@
     result.hidden = false;
     result.classList.toggle('fail', !success);
     result.innerHTML = success
-      ? `✓ 软着陆完成<small>位置误差 ${Math.abs(state.x[0] - config.targetX).toFixed(2)} m · 接地速度 ${velocity.toFixed(2)} m/s · 倾角 ${Math.abs(deg(state.x[4])).toFixed(1)}°</small>`
-      : `${timedOut ? '○ 未在时限内着陆' : '× 着陆条件未满足'}<small>位置误差 ${Math.abs(state.x[0] - config.targetX).toFixed(2)} m · 接地速度 ${velocity.toFixed(2)} m/s · 倾角 ${Math.abs(deg(state.x[4])).toFixed(1)}°</small>`;
+      ? `✓ Soft landing complete<small>Position error ${Math.abs(state.x[0] - config.targetX).toFixed(2)} m · Touchdown speed ${velocity.toFixed(2)} m/s · Tilt ${Math.abs(deg(state.x[4])).toFixed(1)}°</small>`
+      : `${timedOut ? '○ Landing timeout' : '× Landing conditions not met'}<small>Position error ${Math.abs(state.x[0] - config.targetX).toFixed(2)} m · Touchdown speed ${velocity.toFixed(2)} m/s · Tilt ${Math.abs(deg(state.x[4])).toFixed(1)}°</small>`;
     setRunButton();
   }
 
   function setRunButton() {
     const button = $('runBtn');
     button.classList.toggle('running', state.running);
-    button.textContent = state.finished ? '↺ 再来一次' : state.running ? 'Ⅱ 暂停' : '▶ 开始仿真';
+    button.textContent = state.finished ? '↺ Run again' : state.running ? 'Ⅱ Pause' : '▶ Start';
     $('solverBadge').classList.toggle('running', state.running);
   }
 
@@ -349,11 +357,13 @@
       $('lineAlpha').textContent = d.alpha.toFixed(3);
       $('terminalError').textContent = `${d.terminalError.toFixed(3)} norm`;
       $('activeConstraints').textContent = `${d.active} / ${config.horizon * 2}`;
+      $('verticalConstraintResidual').textContent = `${Math.abs(d.terminalVx).toFixed(4)} m/s`;
+      $('verticalConstraintState').textContent = config.terminalVertical ? 'ON · equality' : 'OFF · cost only';
       const improvement = d.initialCost > 0 ? clamp(1 - d.finalCost / d.initialCost, 0, 1) : 0;
       $('costTrackFill').style.width = `${Math.max(3, improvement * 100)}%`;
       $('convergencePill').textContent = d.alpha > 0 ? 'STEP ACCEPTED' : 'STATIONARY';
       $('convergencePill').classList.toggle('good', d.alpha > 0 || d.residual < 1e-4);
-      $('solverMessage').textContent = `非线性代价 ${formatNumber(d.initialCost)} → ${formatNumber(d.finalCost)}；黄色虚线/浅色区域表示输入可行域。`;
+      $('solverMessage').textContent = `Nonlinear cost ${formatNumber(d.initialCost)} → ${formatNumber(d.finalCost)}; terminal vₓ=${d.terminalVx.toFixed(4)} m/s ${config.terminalVertical ? '(equality enabled)' : '(cost tracking only)'}.`;
     }
     const warning = state.solveMs > config.dt * 1000;
     $('solverBadge').classList.toggle('warning', warning);
@@ -385,6 +395,7 @@
     $('randomizeBtn').addEventListener('click', () => resetSimulation(true));
     $('defaultsBtn').addEventListener('click', () => {
       Object.entries(defaultValues).forEach(([key, value]) => { if ($(key)) $(key).value = value; });
+      $('terminalVertical').checked = true;
       updateSliderOutputs();
       resetSimulation(false);
     });
@@ -421,6 +432,11 @@
   updateSliderOutputs();
   resetSimulation(true);
   const launchOptions = new URLSearchParams(window.location.search);
+  if (launchOptions.get('constraint') === 'off') {
+    $('terminalVertical').checked = false;
+    solveMPC();
+    renderAll();
+  }
   if (launchOptions.get('verify') === '1') {
     state.initial = [4.5, 8, -0.2, -0.7, rad(12), 0];
     resetSimulation(false);

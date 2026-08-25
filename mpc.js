@@ -210,24 +210,86 @@
     return { H, g };
   }
 
-  function solveBoxQP(H, g, lower, upper, iterations) {
+  function solveBoxQP(H, g, lower, upper, iterations, equality) {
     const n = g.length;
     const d = new Float64Array(n);
     let residual = Infinity;
-    for (let sweep = 0; sweep < iterations; sweep++) {
-      residual = 0;
-      for (let i = 0; i < n; i++) {
-        let grad = g[i];
-        const row = i * n;
-        for (let j = 0; j < n; j++) grad += H[row + j] * d[j];
-        const old = d[i];
-        const diagonal = Math.max(H[row + i], 1e-8);
-        d[i] = clamp(old - grad / diagonal, lower[i], upper[i]);
-        residual = Math.max(residual, Math.abs(d[i] - old));
+    let equalityResidual = 0;
+    let multiplier = 0;
+    let rho = 400;
+    const outerIterations = equality ? 3 : 1;
+    const sweepsPerOuter = equality ? Math.max(8, Math.ceil(iterations / 2)) : iterations;
+
+    for (let outer = 0; outer < outerIterations; outer++) {
+      let workingH = H;
+      let workingG = g;
+      if (equality) {
+        workingH = new Float64Array(H);
+        workingG = new Float64Array(g);
+        for (let i = 0; i < n; i++) {
+          workingG[i] += (multiplier - rho * equality.b) * equality.a[i];
+          const row = i * n;
+          for (let j = 0; j < n; j++) workingH[row + j] += rho * equality.a[i] * equality.a[j];
+        }
       }
-      if (residual < 1e-5) break;
+
+      for (let sweep = 0; sweep < sweepsPerOuter; sweep++) {
+        residual = 0;
+        for (let i = 0; i < n; i++) {
+          let grad = workingG[i];
+          const row = i * n;
+          for (let j = 0; j < n; j++) grad += workingH[row + j] * d[j];
+          const old = d[i];
+          const diagonal = Math.max(workingH[row + i], 1e-8);
+          d[i] = clamp(old - grad / diagonal, lower[i], upper[i]);
+          residual = Math.max(residual, Math.abs(d[i] - old));
+        }
+        if (residual < 1e-5) break;
+      }
+
+      if (equality) {
+        let value = -equality.b;
+        for (let i = 0; i < n; i++) value += equality.a[i] * d[i];
+        equalityResidual = value;
+        multiplier += rho * value;
+        rho *= 8;
+      }
     }
-    return { step: d, residual };
+
+    // Finish with a weighted projection onto the single equality hyperplane.
+    // For d(lambda) = clip(d + lambda * Hdiag^-1 a), a'd(lambda)-b is monotone,
+    // so a scalar bisection preserves the box bounds and enforces the SQP constraint.
+    if (equality) {
+      const direction = new Float64Array(n);
+      for (let i = 0; i < n; i++) direction[i] = equality.a[i] / Math.max(H[i * n + i], 1e-8);
+      const valueAt = (lambda, apply) => {
+        let value = -equality.b;
+        for (let i = 0; i < n; i++) {
+          const candidate = clamp(d[i] + lambda * direction[i], lower[i], upper[i]);
+          value += equality.a[i] * candidate;
+          if (apply) d[i] = candidate;
+        }
+        return value;
+      };
+      const atZero = valueAt(0, false);
+      let lo = 0;
+      let hi = 0;
+      if (atZero < 0) {
+        hi = 1;
+        for (let k = 0; k < 60 && valueAt(hi, false) < 0; k++) hi *= 2;
+      } else if (atZero > 0) {
+        lo = -1;
+        for (let k = 0; k < 60 && valueAt(lo, false) > 0; k++) lo *= 2;
+      }
+      for (let k = 0; k < 55; k++) {
+        const mid = 0.5 * (lo + hi);
+        if (valueAt(mid, false) < 0) lo = mid;
+        else hi = mid;
+      }
+      valueAt(0.5 * (lo + hi), true);
+      equalityResidual = valueAt(0, false);
+    }
+    return { step: d, residual, equalityResidual };
   }
 
   function makeInitialGuess(x, config) {
@@ -274,6 +336,7 @@
       let iterationsDone = 0;
       let initialCost = Infinity;
       let finalCost = Infinity;
+      let lastEqualityResidual = 0;
       const lower = new Float64Array(U.length);
       const upper = new Float64Array(U.length);
 
@@ -282,15 +345,24 @@
         const cost = evaluateCost(data.states, U, config, this.previousU);
         if (iter === 0) initialCost = cost;
         const qp = buildQP(data.states, data.sensitivities, U, config, this.previousU);
+        let equality = null;
+        if (config.terminalVertical) {
+          const terminalSensitivity = data.sensitivities[config.horizon];
+          const a = new Float64Array(U.length);
+          for (let j = 0; j < U.length; j++) a[j] = terminalSensitivity[2 * U.length + j];
+          equality = { a, b: -data.states[config.horizon][2] };
+        }
         for (let k = 0; k < config.horizon; k++) {
           lower[k * NU] = -U[k * NU];
           upper[k * NU] = config.maxThrust - U[k * NU];
           lower[k * NU + 1] = -config.maxGimbal - U[k * NU + 1];
           upper[k * NU + 1] = config.maxGimbal - U[k * NU + 1];
         }
-        const solution = solveBoxQP(qp.H, qp.g, lower, upper, config.qpIterations);
+        const solution = solveBoxQP(qp.H, qp.g, lower, upper, config.qpIterations, equality);
         lastResidual = solution.residual;
+        lastEqualityResidual = solution.equalityResidual;
         let bestCost = cost;
+        let bestMerit = cost + (config.terminalVertical ? 2000 * data.states[config.horizon][2] ** 2 : 0);
         let bestU = U;
         acceptedAlpha = 0;
         for (const alpha of [1, 0.5, 0.25, 0.125, 0.0625]) {
@@ -298,8 +370,11 @@
           for (let i = 0; i < U.length; i++) candidate[i] = U[i] + alpha * solution.step[i];
           const candidateStates = rollout(x, candidate, config, false).states;
           const candidateCost = evaluateCost(candidateStates, candidate, config, this.previousU);
-          if (candidateCost < bestCost - 1e-8) {
+          const candidateTerminalVx = candidateStates[config.horizon][2];
+          const candidateMerit = candidateCost + (config.terminalVertical ? 2000 * candidateTerminalVx * candidateTerminalVx : 0);
+          if (candidateMerit < bestMerit - 1e-8) {
             bestCost = candidateCost;
+            bestMerit = candidateMerit;
             bestU = candidate;
             acceptedAlpha = alpha;
             break;
@@ -326,7 +401,10 @@
         u: [U[0], U[1]],
         controls: U,
         prediction,
-        diagnostics: { initialCost, finalCost, residual: lastResidual, alpha: acceptedAlpha, iterations: iterationsDone, active, terminalError }
+        diagnostics: {
+          initialCost, finalCost, residual: lastResidual, alpha: acceptedAlpha, iterations: iterationsDone,
+          active, terminalError, terminalVx: terminal[2], equalityResidual: lastEqualityResidual
+        }
       };
     }
 
