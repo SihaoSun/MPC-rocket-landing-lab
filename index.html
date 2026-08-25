@@ -21,6 +21,7 @@
         <span id="solverBadge" class="status-badge"><i></i> SOLVER READY</span>
         <button id="randomizeBtn" class="btn secondary">Randomize</button>
         <button id="resetBtn" class="btn secondary">Reset</button>
+        <button id="replayBtn" class="btn secondary" disabled>↻ Replay 0.1×</button>
         <button id="runBtn" class="btn primary">▶ Start</button>
       </div>
     </header>
@@ -56,18 +57,19 @@
             <span><b>02</b> MPC / SQP</span><i>⌃</i>
           </button>
           <div class="section-body grid-2">
-            <label>Prediction steps <span>N</span><input id="horizon" type="number" min="12" max="70" step="1" value="36" /></label>
-            <label>Sample time <span>s</span><input id="dt" type="number" min="0.05" max="0.3" step="0.01" value="0.12" /></label>
+            <label>Horizon size <span>N</span><input id="horizon" type="number" min="1" max="70" step="1" value="36" /></label>
+            <label>MPC sample time <span>s</span><input id="dt" type="number" min="0.05" max="0.3" step="0.01" value="0.12" /></label>
             <label>SQP iterations <span>count</span><input id="sqpIterations" type="number" min="1" max="8" step="1" value="4" /></label>
             <label>QP iterations <span>count</span><input id="qpIterations" type="number" min="8" max="100" step="1" value="42" /></label>
             <label>Terminal scale <span>×</span><input id="terminalScale" type="number" min="1" max="80" step="1" value="24" /></label>
             <label>Target horizontal pos. <span>m</span><input id="targetX" type="number" min="-8" max="8" step="0.5" value="0" /></label>
           </div>
           <label class="constraint-toggle">
-            <span class="toggle-copy"><b>Vertical terminal velocity</b><small>Enforce the SQP equality v<sub>x,N</sub> = 0</small></span>
-            <input id="terminalVertical" type="checkbox" checked />
+            <span class="toggle-copy"><b>30° landing velocity cone</b><small>Keep terminal velocity within ±30° of downward vertical</small></span>
+            <input id="terminalCone" type="checkbox" checked />
             <i aria-hidden="true"></i>
           </label>
+          <div class="fixed-step-note"><span>Plant integration step</span><b>0.01 s · fixed</b></div>
         </section>
 
         <section class="control-section weights-section">
@@ -143,8 +145,8 @@
               <div><span>Line-search step</span><strong id="lineAlpha">—</strong></div>
               <div><span>Predicted terminal error</span><strong id="terminalError">—</strong></div>
               <div><span>Active box constraints</span><strong id="activeConstraints">—</strong></div>
-              <div><span>Terminal horizontal speed</span><strong id="verticalConstraintResidual">—</strong></div>
-              <div><span>Vertical-velocity constraint</span><strong id="verticalConstraintState">—</strong></div>
+              <div><span>Terminal descent angle</span><strong id="landingConeMetric">—</strong></div>
+              <div><span>Landing cone constraint</span><strong id="landingConeState">—</strong></div>
             </div>
             <div class="cost-track"><i id="costTrackFill"></i></div>
             <p id="solverMessage">Press Start. The MPC problem is solved again at every sample.</p>

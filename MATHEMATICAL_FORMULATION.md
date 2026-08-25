@@ -74,7 +74,7 @@ The torque sign is a convention of this planar model: positive gimbal angle prod
 
 ## 3. Discrete-time prediction model
 
-For sample time $\Delta t$, accelerations are evaluated at $(x_k,u_k)$ and assumed constant over one sample. The discrete dynamics $x_{k+1}=f_d(x_k,u_k)$ are
+For MPC sample time $\Delta t_{\mathrm{MPC}}$, accelerations are evaluated at $(x_k,u_k)$ and assumed constant over one prediction interval. Writing $\Delta t=\Delta t_{\mathrm{MPC}}$, the discrete prediction dynamics $x_{k+1}=f_d(x_k,u_k)$ are
 
 $$
 \begin{aligned}
@@ -87,7 +87,13 @@ v_{z,k+1} &= v_{z,k}+\Delta t\,a_{z,k},\\
 \end{aligned}
 $$
 
-The same nonlinear discrete model is used by both the MPC prediction and the simulated plant.
+The simulated plant uses the same equations with a fixed integration step
+
+$$
+\Delta t_{\mathrm{sim}}=0.01\ \mathrm{s}.
+$$
+
+The MPC executes once every $\Delta t_{\mathrm{MPC}}$ seconds and holds its first control input constant between updates. Consequently, the prediction duration is $N\Delta t_{\mathrm{MPC}}$, while changing the MPC sample time does not change the plant integration accuracy.
 
 ## 4. Reference state
 
@@ -140,7 +146,7 @@ $$
 The implementation gradually increases the state weight toward the end of the horizon using
 
 $$
-\beta_k=0.12+0.88\left(\frac{k}{N}\right)^2,
+\beta_k=0.35+0.65\left(\frac{k}{N}\right)^2,
 \qquad k=1,\ldots,N.
 $$
 
@@ -183,7 +189,7 @@ The controller does not impose a hard altitude constraint. Instead, underground 
 $$
 J_{\mathrm{ground}}=
 \rho_z\sum_{k=1}^{N}\left[\min(0,p_{z,k})\right]^2,
-\qquad \rho_z=220.
+\qquad \rho_z=2500.
 $$
 
 The total objective is
@@ -208,13 +214,34 @@ $$
 \end{aligned}
 $$
 
-When **Vertical terminal velocity** is enabled, the OCP additionally contains
+When the **30° landing velocity cone** is enabled, define its half-angle as
 
 $$
-v_{x,N}=0.
+\gamma=30^\circ.
 $$
 
-This constrains the terminal velocity vector to have no horizontal component. It does not directly constrain $v_{z,N}$; the zero-velocity reference in $J_x$ drives $v_{z,N}$ toward zero. When the toggle is off, $v_{x,N}$ is regulated only by the cost.
+The terminal velocity must point downward and remain inside the cone:
+
+$$
+|v_{x,N}|\leq -v_{z,N}\tan\gamma.
+$$
+
+Equivalently, the OCP adds the two inequalities
+
+$$
+\begin{aligned}
+v_{x,N}+\tan\gamma\,v_{z,N} &\leq 0,\\
+-v_{x,N}+\tan\gamma\,v_{z,N} &\leq 0.
+\end{aligned}
+$$
+
+For $v_{x,N}\neq0$, this is also the requested velocity-ratio condition
+
+$$
+\frac{-v_{z,N}}{|v_{x,N}|}\geq\cot30^\circ=\sqrt{3}.
+$$
+
+The zero-velocity reference remains in the objective, so the cone determines the allowed approach direction while the cost drives the terminal speed toward zero. When the toggle is off, both velocity components are regulated only by the cost.
 
 ## 6. SQP approximation used in the controller
 
@@ -258,15 +285,22 @@ $$
 \end{aligned}
 $$
 
-If the optional terminal equality is enabled, its SQP linearization is
+For each sign $\sigma\in\{-1,+1\}$, define
 
 $$
-e_{v_x}^{\mathsf T}S_Nd=-\bar v_{x,N},
+c_\sigma(x_N)=\sigma v_{x,N}+\tan\gamma\,v_{z,N}.
+$$
+
+The optional cone constraint is linearized and condensed into the QP as
+
+$$
+a_\sigma^{\mathsf T}d\leq-c_\sigma(\bar x_N),
 \qquad
-e_{v_x}=\begin{bmatrix}0&0&1&0&0&0\end{bmatrix}^{\mathsf T}.
+a_\sigma^{\mathsf T}=
+\left(\sigma e_{v_x}+\tan\gamma\,e_{v_z}\right)^{\mathsf T}S_N.
 $$
 
-The code solves the box-constrained QP using projected coordinate descent. The optional equality is handled using augmented-Lagrangian iterations followed by a weighted projection onto the equality hyperplane while preserving the box bounds.
+The code solves the box-constrained QP using projected coordinate descent. The cone inequalities are handled using augmented-Lagrangian iterations followed by alternating weighted projections onto the two half-spaces while preserving the input box bounds.
 
 Finally, a backtracking line search updates
 
@@ -276,11 +310,12 @@ U^{+}=\bar U+\alpha d,
 \alpha\in\left\{1,\frac12,\frac14,\frac18,\frac1{16}\right\}.
 $$
 
-With the terminal equality enabled, the line search uses the merit function
+With the terminal cone enabled, the line search uses the merit function
 
 $$
-\Psi(U)=J(U)+\rho_c v_{x,N}^2,
-\qquad \rho_c=2000.
+\Psi(U)=J(U)+\rho_c
+\left[\max\!\left(0,|v_{x,N}|+\tan\gamma\,v_{z,N}\right)\right]^2,
+\qquad \rho_c=10000.
 $$
 
 Only the first optimized input is applied. The optimized sequence is shifted by one sample to warm-start the next MPC solve.

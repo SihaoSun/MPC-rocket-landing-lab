@@ -5,17 +5,26 @@
   const $ = (id) => document.getElementById(id);
   const deg = (rad) => rad * 180 / Math.PI;
   const rad = (degrees) => degrees * Math.PI / 180;
+  const SIMULATION_DT = 0.01;
+  const REPLAY_RATE = 0.1;
   const state = {
     x: null,
     initial: null,
     path: [],
     inputs: [],
+    mpcFrames: [],
     prediction: [],
     predictedControls: null,
+    predictionTime: 0,
     running: false,
     finished: false,
     time: 0,
     accumulator: 0,
+    mpcAccumulator: 0,
+    replayMode: false,
+    replayPlaying: false,
+    replayTime: 0,
+    replayIndex: 0,
     lastFrame: performance.now(),
     solveMs: 0,
     diagnostics: null,
@@ -47,8 +56,8 @@
       angularDamping: 85,
       maxThrust: clamp(+$('maxThrust').value || defaultValues.maxThrust, 5, 80) * 1000,
       maxGimbal: rad(clamp(+$('maxGimbal').value || defaultValues.maxGimbal, 2, 35)),
-      horizon: Math.round(clamp(+$('horizon').value || defaultValues.horizon, 12, 70)),
-      dt: clamp(+$('dt').value || defaultValues.dt, 0.05, 0.3),
+      horizon: Math.round(clamp(+$('horizon').value || defaultValues.horizon, 1, 70)),
+      dt: Math.round(clamp(+$('dt').value || defaultValues.dt, 0.05, 0.3) / SIMULATION_DT) * SIMULATION_DT,
       sqpIterations: Math.round(clamp(+$('sqpIterations').value || defaultValues.sqpIterations, 1, 8)),
       qpIterations: Math.round(clamp(+$('qpIterations').value || defaultValues.qpIterations, 8, 100)),
       terminalScale: clamp(+$('terminalScale').value || defaultValues.terminalScale, 1, 80),
@@ -59,7 +68,8 @@
       wOmega: +$('wOmega').value,
       wFuel: +$('wFuel').value,
       wSmooth: +$('wSmooth').value,
-      terminalVertical: $('terminalVertical').checked
+      terminalCone: $('terminalCone').checked,
+      coneHalfAngle: rad(30)
     };
   }
 
@@ -81,7 +91,13 @@
     state.finished = false;
     state.time = 0;
     state.accumulator = 0;
+    state.mpcAccumulator = 0;
+    state.replayMode = false;
+    state.replayPlaying = false;
+    state.replayTime = 0;
+    state.replayIndex = 0;
     state.inputs = [];
+    state.mpcFrames = [];
     state.lastControl = [0, 0];
     $('landingResult').hidden = true;
     if (useNewRandom || !state.initial) state.initial = randomInitial();
@@ -103,21 +119,39 @@
     state.solveMs = performance.now() - start;
     state.prediction = result.prediction;
     state.predictedControls = result.controls;
+    state.predictionTime = state.time;
     state.lastControl = result.u;
     state.diagnostics = result.diagnostics;
+    const frame = {
+      t: state.time,
+      prediction: result.prediction.map(x => x.slice()),
+      controls: new Float64Array(result.controls),
+      u: result.u.slice(),
+      diagnostics: { ...result.diagnostics },
+      solveMs: state.solveMs
+    };
+    const lastFrame = state.mpcFrames[state.mpcFrames.length - 1];
+    if (lastFrame && Math.abs(lastFrame.t - state.time) < 1e-9) state.mpcFrames[state.mpcFrames.length - 1] = frame;
+    else state.mpcFrames.push(frame);
   }
 
   function simulationStep() {
     if (state.finished) return;
     const config = readConfig();
-    solveMPC();
     const applied = state.lastControl.slice();
-    const next = discreteDynamics(state.x, applied, config, false).next;
-    state.time += config.dt;
+    const plantConfig = { ...config, dt: SIMULATION_DT };
+    const next = discreteDynamics(state.x, applied, plantConfig, false).next;
+    state.time += SIMULATION_DT;
+    state.mpcAccumulator += SIMULATION_DT;
     state.inputs.push({ t: state.time, u: applied });
     state.x = next;
     state.path.push({ t: state.time, x: next.slice() });
-    controller.advance(applied);
+
+    if (state.mpcAccumulator + 1e-9 >= config.dt) {
+      state.mpcAccumulator = Math.max(0, state.mpcAccumulator - config.dt);
+      controller.advance(applied);
+      solveMPC();
+    }
 
     const nearGroundSettled = state.x[1] < 0.08
       && Math.abs(state.x[0] - config.targetX) < 0.35
@@ -131,6 +165,7 @@
     state.running = false;
     state.finished = true;
     state.x[1] = Math.max(0, state.x[1]);
+    state.path[state.path.length - 1].x = state.x.slice();
     const config = readConfig();
     const positionOK = Math.abs(state.x[0] - config.targetX) < 0.55;
     const velocity = Math.hypot(state.x[2], state.x[3]);
@@ -146,24 +181,78 @@
     setRunButton();
   }
 
+  function startReplay() {
+    if (state.path.length < 2 || !state.finished) return;
+    state.running = false;
+    state.replayMode = true;
+    state.replayPlaying = true;
+    state.replayTime = 0;
+    state.replayIndex = 0;
+    state.time = 0;
+    state.x = state.path[0].x.slice();
+    applyReplayFrame(0);
+    $('landingResult').hidden = true;
+    state.lastFrame = performance.now();
+    setRunButton();
+  }
+
+  function updateReplay(elapsed) {
+    if (!state.replayPlaying) return;
+    const duration = state.path[state.path.length - 1].t;
+    state.replayTime = Math.min(duration, state.replayTime + elapsed * REPLAY_RATE);
+    state.time = state.replayTime;
+    while (state.replayIndex + 1 < state.path.length && state.path[state.replayIndex + 1].t <= state.replayTime + 1e-9) {
+      state.replayIndex++;
+    }
+    state.x = state.path[state.replayIndex].x.slice();
+    applyReplayFrame(state.replayTime);
+    if (state.replayTime >= duration - 1e-9) {
+      state.replayMode = false;
+      state.replayPlaying = false;
+      state.time = duration;
+      state.x = state.path[state.path.length - 1].x.slice();
+      $('landingResult').hidden = false;
+      setRunButton();
+    }
+  }
+
+  function applyReplayFrame(time) {
+    let index = 0;
+    while (index + 1 < state.mpcFrames.length && state.mpcFrames[index + 1].t <= time + 1e-9) index++;
+    const frame = state.mpcFrames[index];
+    if (!frame) return;
+    state.prediction = frame.prediction;
+    state.predictedControls = frame.controls;
+    state.predictionTime = frame.t;
+    state.lastControl = frame.u;
+    state.diagnostics = frame.diagnostics;
+    state.solveMs = frame.solveMs;
+  }
+
   function setRunButton() {
     const button = $('runBtn');
     button.classList.toggle('running', state.running);
     button.textContent = state.finished ? '↺ Run again' : state.running ? 'Ⅱ Pause' : '▶ Start';
-    $('solverBadge').classList.toggle('running', state.running);
+    button.disabled = state.replayMode;
+    const replay = $('replayBtn');
+    replay.disabled = state.path.length < 2 || !state.finished;
+    replay.textContent = state.replayPlaying ? 'Ⅱ Pause replay' : state.replayMode ? '▶ Resume replay' : '↻ Replay 0.1×';
+    $('solverBadge').classList.toggle('running', state.running || state.replayPlaying);
   }
 
   function tick(now) {
-    const elapsed = Math.min((now - state.lastFrame) / 1000, 0.1);
+    const elapsed = Math.max(0, Math.min((now - state.lastFrame) / 1000, 0.1));
     state.lastFrame = now;
     if (state.running) {
       state.accumulator += elapsed;
-      const dt = readConfig().dt;
-      if (state.accumulator >= dt) {
-        state.accumulator -= dt;
+      let steps = 0;
+      while (state.accumulator + 1e-9 >= SIMULATION_DT && steps < 20 && !state.finished) {
+        state.accumulator -= SIMULATION_DT;
         simulationStep();
+        steps++;
       }
     }
+    if (state.replayMode) updateReplay(elapsed);
     renderAll();
     requestAnimationFrame(tick);
   }
@@ -186,7 +275,8 @@
   function drawFlight() {
     const { ctx, width, height } = setupCanvas($('flightCanvas'));
     const config = readConfig();
-    const allStates = state.path.map(p => p.x).concat(state.prediction || []);
+    const visiblePath = state.replayMode ? state.path.slice(0, state.replayIndex + 1) : state.path;
+    const allStates = visiblePath.map(p => p.x).concat(state.prediction || []);
     const maxAbsX = Math.max(6, Math.abs(config.targetX) + 4, ...allStates.map(x => Math.abs(x[0]) + 1.5));
     const maxZ = Math.max(11, ...allStates.map(x => x[1] + 2));
     const margin = { left: 46, right: 24, top: 25, bottom: 44 };
@@ -222,10 +312,10 @@
     }
     drawLandingPad(ctx, sx(config.targetX), groundY);
 
-    if (state.path.length > 1) {
+    if (visiblePath.length > 1) {
       ctx.strokeStyle = '#f0642f'; ctx.lineWidth = 2.5;
       ctx.beginPath();
-      state.path.forEach((point, i) => i ? ctx.lineTo(sx(point.x[0]), sy(point.x[1])) : ctx.moveTo(sx(point.x[0]), sy(point.x[1])));
+      visiblePath.forEach((point, i) => i ? ctx.lineTo(sx(point.x[0]), sy(point.x[1])) : ctx.moveTo(sx(point.x[0]), sy(point.x[1])));
       ctx.stroke();
     }
 
@@ -235,7 +325,7 @@
       state.prediction.forEach((x, i) => i ? ctx.lineTo(sx(x[0]), sy(x[1])) : ctx.moveTo(sx(x[0]), sy(x[1])));
       ctx.stroke(); ctx.setLineDash([]);
       ctx.fillStyle = '#0f7778';
-      for (let i = 5; i < state.prediction.length; i += 5) {
+      for (let i = 1; i < state.prediction.length; i++) {
         ctx.beginPath(); ctx.arc(sx(state.prediction[i][0]), sy(state.prediction[i][1]), 2.4, 0, Math.PI * 2); ctx.fill();
       }
     }
@@ -261,7 +351,7 @@
     ctx.save();
     ctx.translate(x, y);
     ctx.rotate(theta);
-    if (!state.finished && thrustRatio > .03) {
+    if ((!state.finished || state.replayMode) && thrustRatio > .03) {
       const flame = 10 + 24 * thrustRatio;
       ctx.fillStyle = 'rgba(246,189,69,.72)';
       ctx.beginPath(); ctx.moveTo(-6, 14); ctx.lineTo(0, 14 + flame); ctx.lineTo(6, 14); ctx.closePath(); ctx.fill();
@@ -288,7 +378,8 @@
     const horizonSeconds = config.horizon * config.dt;
     const historySeconds = 7;
     const minTime = Math.max(0, state.time - historySeconds);
-    const maxTime = Math.max(historySeconds, state.time + horizonSeconds);
+    const predictionStart = state.predictionTime ?? state.time;
+    const maxTime = Math.max(historySeconds, state.time + horizonSeconds, predictionStart + horizonSeconds);
     const xMap = t => margin.left + (t - minTime) / Math.max(maxTime - minTime, .1) * w;
     const isThrust = kind === 0;
     const limit = isThrust ? config.maxThrust / 1000 : deg(config.maxGimbal);
@@ -320,7 +411,7 @@
     ctx.fillText('now', nowX, height - 10);
     ctx.fillText(`${maxTime.toFixed(1)}s`, width - margin.right - 10, height - 10);
 
-    const history = state.inputs.filter(p => p.t >= minTime);
+    const history = state.inputs.filter(p => p.t >= minTime && p.t <= state.time + 1e-9);
     if (history.length) {
       ctx.strokeStyle = '#f0642f'; ctx.lineWidth = 2.2; ctx.beginPath();
       history.forEach((p, i) => {
@@ -330,12 +421,20 @@
       ctx.stroke();
     }
     if (state.predictedControls) {
+      const predictedSteps = Math.min(config.horizon, state.predictedControls.length / 2);
       ctx.strokeStyle = '#0f7778'; ctx.lineWidth = 1.8; ctx.setLineDash([5, 4]); ctx.beginPath();
-      ctx.moveTo(nowX, yMap(toUnit(state.lastControl[kind])));
-      for (let k = 0; k < config.horizon; k++) {
-        ctx.lineTo(xMap(state.time + (k + 1) * config.dt), yMap(toUnit(state.predictedControls[k * 2 + kind])));
+      for (let k = 0; k < predictedSteps; k++) {
+        const px = xMap(predictionStart + k * config.dt);
+        const py = yMap(toUnit(state.predictedControls[k * 2 + kind]));
+        k ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
       }
       ctx.stroke(); ctx.setLineDash([]);
+      ctx.fillStyle = '#0f7778';
+      for (let k = 0; k < predictedSteps; k++) {
+        ctx.beginPath();
+        ctx.arc(xMap(predictionStart + k * config.dt), yMap(toUnit(state.predictedControls[k * 2 + kind])), 2.6, 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
   }
 
@@ -357,17 +456,17 @@
       $('lineAlpha').textContent = d.alpha.toFixed(3);
       $('terminalError').textContent = `${d.terminalError.toFixed(3)} norm`;
       $('activeConstraints').textContent = `${d.active} / ${config.horizon * 2}`;
-      $('verticalConstraintResidual').textContent = `${Math.abs(d.terminalVx).toFixed(4)} m/s`;
-      $('verticalConstraintState').textContent = config.terminalVertical ? 'ON · equality' : 'OFF · cost only';
+      $('landingConeMetric').textContent = `${d.terminalConeAngle.toFixed(1)}° / ≤ 30°`;
+      $('landingConeState').textContent = config.terminalCone ? 'ON · inequalities' : 'OFF · cost only';
       const improvement = d.initialCost > 0 ? clamp(1 - d.finalCost / d.initialCost, 0, 1) : 0;
       $('costTrackFill').style.width = `${Math.max(3, improvement * 100)}%`;
       $('convergencePill').textContent = d.alpha > 0 ? 'STEP ACCEPTED' : 'STATIONARY';
       $('convergencePill').classList.toggle('good', d.alpha > 0 || d.residual < 1e-4);
-      $('solverMessage').textContent = `Nonlinear cost ${formatNumber(d.initialCost)} → ${formatNumber(d.finalCost)}; terminal vₓ=${d.terminalVx.toFixed(4)} m/s ${config.terminalVertical ? '(equality enabled)' : '(cost tracking only)'}.`;
+      $('solverMessage').textContent = `Nonlinear cost ${formatNumber(d.initialCost)} → ${formatNumber(d.finalCost)}; terminal velocity angle ${d.terminalConeAngle.toFixed(1)}° ${config.terminalCone ? '(30° cone enabled)' : '(cost tracking only)'}.`;
     }
     const warning = state.solveMs > config.dt * 1000;
     $('solverBadge').classList.toggle('warning', warning);
-    $('solverBadge').innerHTML = `<i></i>${warning ? 'SOLVER SLOW' : state.running ? 'MPC CLOSED LOOP' : 'SOLVER READY'}`;
+    $('solverBadge').innerHTML = `<i></i>${warning ? 'SOLVER SLOW' : state.replayMode ? 'REPLAY 0.1×' : state.running ? 'MPC CLOSED LOOP' : 'SOLVER READY'}`;
   }
 
   function formatNumber(value) {
@@ -391,11 +490,19 @@
       state.lastFrame = performance.now();
       setRunButton();
     });
+    $('replayBtn').addEventListener('click', () => {
+      if (!state.replayMode) startReplay();
+      else {
+        state.replayPlaying = !state.replayPlaying;
+        state.lastFrame = performance.now();
+        setRunButton();
+      }
+    });
     $('resetBtn').addEventListener('click', () => resetSimulation(false));
     $('randomizeBtn').addEventListener('click', () => resetSimulation(true));
     $('defaultsBtn').addEventListener('click', () => {
       Object.entries(defaultValues).forEach(([key, value]) => { if ($(key)) $(key).value = value; });
-      $('terminalVertical').checked = true;
+      $('terminalCone').checked = true;
       updateSliderOutputs();
       resetSimulation(false);
     });
@@ -432,17 +539,27 @@
   updateSliderOutputs();
   resetSimulation(true);
   const launchOptions = new URLSearchParams(window.location.search);
+  if (launchOptions.has('horizon')) {
+    $('horizon').value = String(Math.round(clamp(+launchOptions.get('horizon') || 1, 1, 70)));
+    resetSimulation(false);
+  }
   if (launchOptions.get('constraint') === 'off') {
-    $('terminalVertical').checked = false;
+    $('terminalCone').checked = false;
     solveMPC();
     renderAll();
   }
   if (launchOptions.get('verify') === '1') {
     state.initial = [4.5, 8, 0, 0, rad(12), 0];
     resetSimulation(false);
-    for (let k = 0; k < 220 && !state.finished; k++) simulationStep();
+    for (let k = 0; k < 4000 && !state.finished; k++) simulationStep();
     renderAll();
     document.body.dataset.verification = state.finished ? $('landingResult').textContent : 'incomplete';
+    if (launchOptions.get('replay') === '1' && state.finished) {
+      startReplay();
+      updateReplay(10);
+      renderAll();
+      document.body.dataset.replay = `time=${state.replayTime.toFixed(2)}, index=${state.replayIndex}`;
+    }
   } else if (launchOptions.get('autostart') === '1') {
     state.running = true;
     setRunButton();

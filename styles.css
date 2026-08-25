@@ -70,6 +70,7 @@ button { color: inherit; }
 .btn.primary:hover { background: var(--orange-dark); }
 .btn.primary.running { background: var(--teal); border-color: var(--teal); }
 .btn.secondary { background: transparent; }
+.btn:disabled { opacity: .42; cursor: not-allowed; transform: none; box-shadow: none; }
 .icon-btn { width: 32px; height: 32px; color: var(--muted); }
 
 .workspace { display: grid; grid-template-columns: 292px minmax(0, 1fr); min-height: calc(100vh - 78px); }
@@ -112,6 +113,8 @@ input[type="number"]:focus { border-color: var(--teal); box-shadow: 0 0 0 2px rg
 .constraint-toggle input:checked + i { background: var(--teal); }
 .constraint-toggle input:checked + i::after { transform: translateX(16px); }
 .constraint-toggle input:focus-visible + i { outline: 2px solid var(--orange); outline-offset: 2px; }
+.fixed-step-note { display: flex; justify-content: space-between; padding: 8px 3px 0; color: var(--muted); font-size: 8px; }
+.fixed-step-note b { color: var(--teal); font: 700 8px/1 ui-monospace, monospace; }
 
 .slider-label { display: grid; grid-template-columns: 1fr 40px; align-items: center; gap: 2px 8px; margin: 8px 0 11px; font-size: 10px; font-weight: 700; }
 .slider-label output { justify-self: end; font: 700 10px/1 ui-monospace, monospace; color: var(--teal); }

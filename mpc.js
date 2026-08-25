@@ -8,6 +8,7 @@
   const NX = 6;
   const NU = 2;
   const G = 9.81;
+  const GROUND_PENALTY = 2500;
 
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
@@ -108,7 +109,7 @@
 
   function stateWeights(config, k, N) {
     const progress = k / N;
-    const ramp = 0.12 + 0.88 * progress * progress;
+    const ramp = 0.35 + 0.65 * progress * progress;
     const terminal = k === N ? config.terminalScale : 1;
     const scales = [5, 5, 3, 3, 0.35, 0.7];
     const base = [config.wPos, config.wPos, config.wVel, config.wVel, config.wAngle, config.wOmega];
@@ -126,7 +127,7 @@
         const e = x[i] - ref[i];
         cost += q[i] * e * e;
       }
-      if (x[1] < 0) cost += 220 * x[1] * x[1];
+      if (x[1] < 0) cost += GROUND_PENALTY * x[1] * x[1];
     }
     const tScale = Math.max(config.maxThrust, 1);
     const dScale = Math.max(config.maxGimbal, 1e-3);
@@ -171,9 +172,9 @@
         const sr = m;
         for (let i = 0; i < m; i++) {
           const si = S[sr + i];
-          g[i] += 440 * x[1] * si;
+          g[i] += 2 * GROUND_PENALTY * x[1] * si;
           const hi = i * m;
-          for (let j = 0; j <= i; j++) H[hi + j] += 440 * si * S[sr + j];
+          for (let j = 0; j <= i; j++) H[hi + j] += 2 * GROUND_PENALTY * si * S[sr + j];
         }
       }
     }
@@ -210,26 +211,33 @@
     return { H, g };
   }
 
-  function solveBoxQP(H, g, lower, upper, iterations, equality) {
+  function solveBoxQP(H, g, lower, upper, iterations, linearConstraints) {
     const n = g.length;
     const d = new Float64Array(n);
     let residual = Infinity;
-    let equalityResidual = 0;
-    let multiplier = 0;
+    let maxLinearViolation = 0;
+    const constraints = linearConstraints || [];
+    const multipliers = new Float64Array(constraints.length);
     let rho = 400;
-    const outerIterations = equality ? 3 : 1;
-    const sweepsPerOuter = equality ? Math.max(8, Math.ceil(iterations / 2)) : iterations;
+    const outerIterations = constraints.length ? 3 : 1;
+    const sweepsPerOuter = constraints.length ? Math.max(8, Math.ceil(iterations / 2)) : iterations;
 
     for (let outer = 0; outer < outerIterations; outer++) {
       let workingH = H;
       let workingG = g;
-      if (equality) {
+      if (constraints.length) {
         workingH = new Float64Array(H);
         workingG = new Float64Array(g);
-        for (let i = 0; i < n; i++) {
-          workingG[i] += (multiplier - rho * equality.b) * equality.a[i];
-          const row = i * n;
-          for (let j = 0; j < n; j++) workingH[row + j] += rho * equality.a[i] * equality.a[j];
+        for (let q = 0; q < constraints.length; q++) {
+          const constraint = constraints[q];
+          let value = -constraint.b;
+          for (let i = 0; i < n; i++) value += constraint.a[i] * d[i];
+          if (value <= 0 && multipliers[q] === 0) continue;
+          for (let i = 0; i < n; i++) {
+            workingG[i] += (multipliers[q] - rho * constraint.b) * constraint.a[i];
+            const row = i * n;
+            for (let j = 0; j < n; j++) workingH[row + j] += rho * constraint.a[i] * constraint.a[j];
+          }
         }
       }
 
@@ -247,49 +255,53 @@
         if (residual < 1e-5) break;
       }
 
-      if (equality) {
-        let value = -equality.b;
-        for (let i = 0; i < n; i++) value += equality.a[i] * d[i];
-        equalityResidual = value;
-        multiplier += rho * value;
+      if (constraints.length) {
+        for (let q = 0; q < constraints.length; q++) {
+          let value = -constraints[q].b;
+          for (let i = 0; i < n; i++) value += constraints[q].a[i] * d[i];
+          multipliers[q] = Math.max(0, multipliers[q] + rho * value);
+        }
         rho *= 8;
       }
     }
 
-    // Finish with a weighted projection onto the single equality hyperplane.
-    // For d(lambda) = clip(d + lambda * Hdiag^-1 a), a'd(lambda)-b is monotone,
-    // so a scalar bisection preserves the box bounds and enforces the SQP constraint.
-    if (equality) {
-      const direction = new Float64Array(n);
-      for (let i = 0; i < n; i++) direction[i] = equality.a[i] / Math.max(H[i * n + i], 1e-8);
-      const valueAt = (lambda, apply) => {
-        let value = -equality.b;
-        for (let i = 0; i < n; i++) {
-          const candidate = clamp(d[i] + lambda * direction[i], lower[i], upper[i]);
-          value += equality.a[i] * candidate;
-          if (apply) d[i] = candidate;
-        }
-        return value;
-      };
-      const atZero = valueAt(0, false);
-      let lo = 0;
-      let hi = 0;
-      if (atZero < 0) {
-        hi = 1;
-        for (let k = 0; k < 60 && valueAt(hi, false) < 0; k++) hi *= 2;
-      } else if (atZero > 0) {
-        lo = -1;
+    // Alternating weighted projections enforce the linearized landing-cone
+    // half-spaces while retaining every input box bound.
+    for (let pass = 0; pass < 10 && constraints.length; pass++) {
+      maxLinearViolation = 0;
+      for (const constraint of constraints) {
+        const direction = new Float64Array(n);
+        for (let i = 0; i < n; i++) direction[i] = constraint.a[i] / Math.max(H[i * n + i], 1e-8);
+        const valueAt = (lambda, apply) => {
+          let value = -constraint.b;
+          for (let i = 0; i < n; i++) {
+            const candidate = clamp(d[i] + lambda * direction[i], lower[i], upper[i]);
+            value += constraint.a[i] * candidate;
+            if (apply) d[i] = candidate;
+          }
+          return value;
+        };
+        const violation = valueAt(0, false);
+        maxLinearViolation = Math.max(maxLinearViolation, violation);
+        if (violation <= 1e-7) continue;
+        let lo = -1;
         for (let k = 0; k < 60 && valueAt(lo, false) > 0; k++) lo *= 2;
+        let hi = 0;
+        for (let k = 0; k < 55; k++) {
+          const mid = 0.5 * (lo + hi);
+          if (valueAt(mid, false) <= 0) lo = mid;
+          else hi = mid;
+        }
+        valueAt(0.5 * (lo + hi), true);
       }
-      for (let k = 0; k < 55; k++) {
-        const mid = 0.5 * (lo + hi);
-        if (valueAt(mid, false) < 0) lo = mid;
-        else hi = mid;
-      }
-      valueAt(0.5 * (lo + hi), true);
-      equalityResidual = valueAt(0, false);
     }
-    return { step: d, residual, equalityResidual };
+    maxLinearViolation = 0;
+    for (const constraint of constraints) {
+      let value = -constraint.b;
+      for (let i = 0; i < n; i++) value += constraint.a[i] * d[i];
+      maxLinearViolation = Math.max(maxLinearViolation, value);
+    }
+    return { step: d, residual, linearViolation: Math.max(0, maxLinearViolation) };
   }
 
   function makeInitialGuess(x, config) {
@@ -336,7 +348,7 @@
       let iterationsDone = 0;
       let initialCost = Infinity;
       let finalCost = Infinity;
-      let lastEqualityResidual = 0;
+      let lastLinearViolation = 0;
       const lower = new Float64Array(U.length);
       const upper = new Float64Array(U.length);
 
@@ -345,12 +357,20 @@
         const cost = evaluateCost(data.states, U, config, this.previousU);
         if (iter === 0) initialCost = cost;
         const qp = buildQP(data.states, data.sensitivities, U, config, this.previousU);
-        let equality = null;
-        if (config.terminalVertical) {
+        const linearConstraints = [];
+        if (config.terminalCone) {
           const terminalSensitivity = data.sensitivities[config.horizon];
-          const a = new Float64Array(U.length);
-          for (let j = 0; j < U.length; j++) a[j] = terminalSensitivity[2 * U.length + j];
-          equality = { a, b: -data.states[config.horizon][2] };
+          const terminalState = data.states[config.horizon];
+          const tanCone = Math.tan(config.coneHalfAngle);
+          for (const sign of [1, -1]) {
+            const a = new Float64Array(U.length);
+            for (let j = 0; j < U.length; j++) {
+              a[j] = sign * terminalSensitivity[2 * U.length + j]
+                + tanCone * terminalSensitivity[3 * U.length + j];
+            }
+            const value = sign * terminalState[2] + tanCone * terminalState[3];
+            linearConstraints.push({ a, b: -value });
+          }
         }
         for (let k = 0; k < config.horizon; k++) {
           lower[k * NU] = -U[k * NU];
@@ -358,11 +378,13 @@
           lower[k * NU + 1] = -config.maxGimbal - U[k * NU + 1];
           upper[k * NU + 1] = config.maxGimbal - U[k * NU + 1];
         }
-        const solution = solveBoxQP(qp.H, qp.g, lower, upper, config.qpIterations, equality);
+        const solution = solveBoxQP(qp.H, qp.g, lower, upper, config.qpIterations, linearConstraints);
         lastResidual = solution.residual;
-        lastEqualityResidual = solution.equalityResidual;
+        lastLinearViolation = solution.linearViolation;
         let bestCost = cost;
-        let bestMerit = cost + (config.terminalVertical ? 2000 * data.states[config.horizon][2] ** 2 : 0);
+        const coneTangent = Math.tan(config.coneHalfAngle);
+        const initialConeViolation = Math.max(0, Math.abs(data.states[config.horizon][2]) + coneTangent * data.states[config.horizon][3]);
+        let bestMerit = cost + (config.terminalCone ? 10000 * initialConeViolation ** 2 : 0);
         let bestU = U;
         acceptedAlpha = 0;
         for (const alpha of [1, 0.5, 0.25, 0.125, 0.0625]) {
@@ -370,8 +392,9 @@
           for (let i = 0; i < U.length; i++) candidate[i] = U[i] + alpha * solution.step[i];
           const candidateStates = rollout(x, candidate, config, false).states;
           const candidateCost = evaluateCost(candidateStates, candidate, config, this.previousU);
-          const candidateTerminalVx = candidateStates[config.horizon][2];
-          const candidateMerit = candidateCost + (config.terminalVertical ? 2000 * candidateTerminalVx * candidateTerminalVx : 0);
+          const candidateTerminal = candidateStates[config.horizon];
+          const candidateConeViolation = Math.max(0, Math.abs(candidateTerminal[2]) + coneTangent * candidateTerminal[3]);
+          const candidateMerit = candidateCost + (config.terminalCone ? 10000 * candidateConeViolation ** 2 : 0);
           if (candidateMerit < bestMerit - 1e-8) {
             bestCost = candidateCost;
             bestMerit = candidateMerit;
@@ -396,6 +419,9 @@
       }
       const terminal = prediction[prediction.length - 1];
       const terminalError = Math.hypot(terminal[0] - config.targetX, terminal[1], terminal[2], terminal[3], 2 * terminal[4]);
+      const terminalSpeed = Math.hypot(terminal[2], terminal[3]);
+      const terminalConeAngle = terminalSpeed < 1e-8 ? 0 : Math.atan2(Math.abs(terminal[2]), -terminal[3]) * 180 / Math.PI;
+      const terminalConeViolation = Math.max(0, Math.abs(terminal[2]) + Math.tan(config.coneHalfAngle) * terminal[3]);
       this.U = U;
       return {
         u: [U[0], U[1]],
@@ -403,7 +429,8 @@
         prediction,
         diagnostics: {
           initialCost, finalCost, residual: lastResidual, alpha: acceptedAlpha, iterations: iterationsDone,
-          active, terminalError, terminalVx: terminal[2], equalityResidual: lastEqualityResidual
+          active, terminalError, terminalVx: terminal[2], terminalVz: terminal[3], terminalConeAngle,
+          terminalConeViolation, linearViolation: lastLinearViolation
         }
       };
     }
