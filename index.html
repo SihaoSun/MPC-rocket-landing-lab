@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="基于手写 SQP 的二维火箭着陆 MPC 可视化演示" />
+  <title>SQP / MPC · Rocket Landing Lab</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">△</span>
+        <div>
+          <h1>ROCKET LANDING LAB</h1>
+          <p>NONLINEAR MPC · HANDWRITTEN SQP</p>
+        </div>
+      </div>
+      <div class="header-actions">
+        <span id="solverBadge" class="status-badge"><i></i> SOLVER READY</span>
+        <button id="randomizeBtn" class="btn secondary">随机初态</button>
+        <button id="resetBtn" class="btn secondary">重置</button>
+        <button id="runBtn" class="btn primary">▶ 开始仿真</button>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <aside class="control-panel">
+        <div class="panel-heading">
+          <div>
+            <span class="eyebrow">CONTROL DECK</span>
+            <h2>参数配置</h2>
+          </div>
+          <button id="defaultsBtn" class="icon-btn" title="恢复默认参数">↺</button>
+        </div>
+
+        <section class="control-section">
+          <button class="section-title" aria-expanded="true">
+            <span><b>01</b> 火箭模型</span><i>⌃</i>
+          </button>
+          <div class="section-body grid-2">
+            <label>质量 <span>kg</span><input id="mass" type="number" min="150" max="3000" step="10" value="620" /></label>
+            <label>惯量 <span>kg·m²</span><input id="inertia" type="number" min="100" max="10000" step="10" value="920" /></label>
+            <label>发动机力臂 <span>m</span><input id="lever" type="number" min="0.2" max="5" step="0.1" value="2.2" /></label>
+            <label>线性阻力 <span>N·s/m</span><input id="drag" type="number" min="0" max="100" step="1" value="12" /></label>
+            <label>最大推力 <span>kN</span><input id="maxThrust" type="number" min="5" max="80" step="0.5" value="18" /></label>
+            <label>摆角上限 <span>deg</span><input id="maxGimbal" type="number" min="2" max="35" step="1" value="18" /></label>
+          </div>
+        </section>
+
+        <section class="control-section">
+          <button class="section-title" aria-expanded="true">
+            <span><b>02</b> MPC / SQP</span><i>⌃</i>
+          </button>
+          <div class="section-body grid-2">
+            <label>预测步数 <span>N</span><input id="horizon" type="number" min="12" max="70" step="1" value="36" /></label>
+            <label>采样周期 <span>s</span><input id="dt" type="number" min="0.05" max="0.3" step="0.01" value="0.12" /></label>
+            <label>SQP 迭代 <span>次</span><input id="sqpIterations" type="number" min="1" max="8" step="1" value="4" /></label>
+            <label>QP 迭代 <span>次</span><input id="qpIterations" type="number" min="8" max="100" step="1" value="42" /></label>
+            <label>终端倍率 <span>×</span><input id="terminalScale" type="number" min="1" max="80" step="1" value="24" /></label>
+            <label>目标横坐标 <span>m</span><input id="targetX" type="number" min="-8" max="8" step="0.5" value="0" /></label>
+          </div>
+        </section>
+
+        <section class="control-section weights-section">
+          <button class="section-title" aria-expanded="true">
+            <span><b>03</b> 代价权重</span><i>⌃</i>
+          </button>
+          <div class="section-body">
+            <label class="slider-label"><span>位置 q<sub>p</sub></span><output id="wPosOut">18</output><input id="wPos" type="range" min="0" max="40" step="1" value="18" /></label>
+            <label class="slider-label"><span>速度 q<sub>v</sub></span><output id="wVelOut">14</output><input id="wVel" type="range" min="0" max="40" step="1" value="14" /></label>
+            <label class="slider-label"><span>姿态 q<sub>θ</sub></span><output id="wAngleOut">24</output><input id="wAngle" type="range" min="0" max="50" step="1" value="24" /></label>
+            <label class="slider-label"><span>角速度 q<sub>ω</sub></span><output id="wOmegaOut">6</output><input id="wOmega" type="range" min="0" max="30" step="1" value="6" /></label>
+            <label class="slider-label"><span>燃料 r<sub>T</sub></span><output id="wFuelOut">0.18</output><input id="wFuel" type="range" min="0" max="1" step="0.02" value="0.18" /></label>
+            <label class="slider-label"><span>输入平滑 r<sub>Δu</sub></span><output id="wSmoothOut">1.2</output><input id="wSmooth" type="range" min="0" max="5" step="0.1" value="1.2" /></label>
+          </div>
+        </section>
+
+        <div class="reference-card">
+          <span>常值参考 x<sub>ref</sub></span>
+          <code>[x*, 0, 0, 0, 0, 0]</code>
+          <p>位置、速度和姿态参考在整个预测域保持不变，终端项使用更高权重。</p>
+        </div>
+      </aside>
+
+      <section class="dashboard">
+        <div class="telemetry-strip">
+          <div><span>高度</span><strong id="altitudeValue">—</strong><small>m</small></div>
+          <div><span>水平误差</span><strong id="xErrorValue">—</strong><small>m</small></div>
+          <div><span>垂直速度</span><strong id="vzValue">—</strong><small>m/s</small></div>
+          <div><span>倾角</span><strong id="angleValue">—</strong><small>deg</small></div>
+          <div><span>SQP 代价</span><strong id="costValue">—</strong><small>J</small></div>
+          <div><span>求解耗时</span><strong id="solveValue">—</strong><small>ms</small></div>
+        </div>
+
+        <div class="viz-grid">
+          <article class="card flight-card">
+            <div class="card-header">
+              <div><span class="eyebrow">FLIGHT VIEW</span><h3>闭环着陆轨迹</h3></div>
+              <div class="legend"><span class="actual">实际</span><span class="predicted">MPC 预测</span><span class="target">目标</span></div>
+            </div>
+            <div class="canvas-wrap flight-wrap">
+              <canvas id="flightCanvas"></canvas>
+              <div class="flight-overlay">
+                <span id="timeChip">T + 0.00 s</span>
+                <span id="iterationChip">SQP 0 / 0</span>
+              </div>
+              <div id="landingResult" class="landing-result" hidden></div>
+            </div>
+          </article>
+
+          <article class="card input-card">
+            <div class="card-header">
+              <div><span class="eyebrow">CONTROL INPUT</span><h3>推力 T</h3></div>
+              <strong id="thrustNow">0.0 kN</strong>
+            </div>
+            <div class="canvas-wrap chart-wrap"><canvas id="thrustCanvas"></canvas></div>
+          </article>
+
+          <article class="card input-card">
+            <div class="card-header">
+              <div><span class="eyebrow">CONTROL INPUT</span><h3>推力摆角 δ</h3></div>
+              <strong id="gimbalNow">0.0°</strong>
+            </div>
+            <div class="canvas-wrap chart-wrap"><canvas id="gimbalCanvas"></canvas></div>
+          </article>
+
+          <article class="card diagnostics-card">
+            <div class="card-header">
+              <div><span class="eyebrow">SQP DIAGNOSTICS</span><h3>实时求解状态</h3></div>
+              <span id="convergencePill" class="pill">WAITING</span>
+            </div>
+            <div class="diagnostics-grid">
+              <div><span>QP 投影梯度</span><strong id="qpResidual">—</strong></div>
+              <div><span>线搜索步长</span><strong id="lineAlpha">—</strong></div>
+              <div><span>预测末端误差</span><strong id="terminalError">—</strong></div>
+              <div><span>约束激活</span><strong id="activeConstraints">—</strong></div>
+            </div>
+            <div class="cost-track"><i id="costTrackFill"></i></div>
+            <p id="solverMessage">点击“开始仿真”，MPC 将在每个采样时刻重新求解。</p>
+          </article>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script src="mpc.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
