@@ -34,7 +34,7 @@
 
   const defaultValues = {
     mass: 620, radius: 0.85, bodyHeight: 4, lever: 2.2, drag: 12, maxThrust: 18, maxGimbal: 18,
-    horizon: 36, dt: 0.12, sqpIterations: 4, qpIterations: 42, terminalScale: 24, targetX: 0,
+    horizon: 20, dt: 0.10, sqpIterations: 4, qpIterations: 42, terminalScale: 24, targetX: 0, coneAngle: 45,
     wPos: 18, wVel: 14, wAngle: 24, wOmega: 6, wFuel: 0.18, wSmooth: 1.2
   };
   let controller;
@@ -68,22 +68,37 @@
       wOmega: +$('wOmega').value,
       wFuel: +$('wFuel').value,
       wSmooth: +$('wSmooth').value,
-      terminalCone: $('terminalCone').checked,
-      coneHalfAngle: rad(30)
+      trajectoryCone: $('trajectoryCone').checked,
+      coneHalfAngle: rad(clamp(+$('coneAngle').value || defaultValues.coneAngle, 15, 90))
     };
   }
 
   function randomInitial() {
-    const target = readConfig().targetX;
+    const config = readConfig();
+    const target = config.targetX;
     const side = Math.random() < 0.5 ? -1 : 1;
+    const altitude = 7.3 + Math.random() * 3.2;
+    const coneLimit = altitude * Math.tan(config.coneHalfAngle);
+    const maxOffset = config.trajectoryCone ? Math.min(7, 0.85 * coneLimit) : 7;
+    const minOffset = config.trajectoryCone ? Math.min(2.8, Math.max(0.35, 0.45 * maxOffset)) : 2.8;
     return [
-      target + side * (2.8 + Math.random() * 4.2),
-      7.3 + Math.random() * 3.2,
+      target + side * (minOffset + Math.random() * (maxOffset - minOffset)),
+      altitude,
       0,
       0,
       rad(-18 + Math.random() * 36),
       0
     ];
+  }
+
+  function makeStoredInitialConeCompatible(config) {
+    if (!config.trajectoryCone || !state.initial) return false;
+    const offset = state.initial[0] - config.targetX;
+    const safeOffset = 0.85 * Math.max(0, state.initial[1]) * Math.tan(config.coneHalfAngle);
+    if (Math.abs(offset) <= safeOffset) return false;
+    const side = Math.sign(offset) || 1;
+    state.initial[0] = config.targetX + side * safeOffset;
+    return true;
   }
 
   function resetSimulation(useNewRandom) {
@@ -310,6 +325,7 @@
     for (let x = -10; x < width + 10; x += 18) {
       ctx.beginPath(); ctx.moveTo(x, groundY + 16); ctx.lineTo(x + 14, groundY); ctx.stroke();
     }
+    if (config.trajectoryCone) drawLandingCone(ctx, sx, sy, config.targetX, maxZ, config.coneHalfAngle, -maxAbsX, maxAbsX);
     drawLandingPad(ctx, sx(config.targetX), groundY);
 
     if (visiblePath.length > 1) {
@@ -343,6 +359,45 @@
     ctx.beginPath(); ctx.arc(x, y - 5, 13, Math.PI, 0); ctx.stroke();
     ctx.fillStyle = '#17252a'; ctx.font = '800 8px ui-monospace, monospace'; ctx.textAlign = 'center';
     ctx.fillText('LANDING ZONE', x, y + 28);
+    ctx.restore();
+  }
+
+  function drawLandingCone(ctx, sx, sy, targetX, maxZ, halfAngle, minX, maxX) {
+    const sine = Math.sin(halfAngle);
+    const cosine = Math.max(0, Math.cos(halfAngle));
+    const rayToBoundary = sign => {
+      const sideDistance = sign < 0 ? targetX - minX : maxX - targetX;
+      const sideScale = sine > 1e-9 ? sideDistance / sine : Infinity;
+      const topScale = cosine > 1e-9 ? maxZ / cosine : Infinity;
+      const scale = Math.min(sideScale, topScale);
+      return {
+        x: targetX + sign * scale * sine,
+        z: scale * cosine,
+        hitsSide: sideScale <= topScale
+      };
+    };
+    const left = rayToBoundary(-1);
+    const right = rayToBoundary(1);
+    ctx.save();
+    ctx.fillStyle = 'rgba(246,189,69,.055)';
+    ctx.beginPath();
+    ctx.moveTo(sx(targetX), sy(0));
+    ctx.lineTo(sx(left.x), sy(left.z));
+    if (left.hitsSide) ctx.lineTo(sx(minX), sy(maxZ));
+    if (right.hitsSide) ctx.lineTo(sx(maxX), sy(maxZ));
+    ctx.lineTo(sx(right.x), sy(right.z));
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(214,160,39,.85)';
+    ctx.lineWidth = 1.2;
+    ctx.setLineDash([6, 5]);
+    for (const endpoint of [left, right]) {
+      ctx.beginPath();
+      ctx.moveTo(sx(targetX), sy(0));
+      ctx.lineTo(sx(endpoint.x), sy(endpoint.z));
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
     ctx.restore();
   }
 
@@ -456,13 +511,18 @@
       $('lineAlpha').textContent = d.alpha.toFixed(3);
       $('terminalError').textContent = `${d.terminalError.toFixed(3)} norm`;
       $('activeConstraints').textContent = `${d.active} / ${config.horizon * 2}`;
-      $('landingConeMetric').textContent = `${d.terminalConeAngle.toFixed(1)}° / ≤ 30°`;
-      $('landingConeState').textContent = config.terminalCone ? 'ON · inequalities' : 'OFF · cost only';
+      const coneAngleDegrees = deg(config.coneHalfAngle);
+      $('corridorLegend').textContent = `${coneAngleDegrees.toFixed(0)}° corridor`;
+      $('trajectoryConeMetric').textContent = `${d.maxTrajectoryConeAngle.toFixed(1)}° / ≤ ${coneAngleDegrees.toFixed(0)}°`;
+      const coneConstraintCount = d.coneConstraintCount ?? (config.trajectoryCone ? config.horizon * 2 : 0);
+      $('trajectoryConeState').textContent = config.trajectoryCone
+        ? `ON · ${coneConstraintCount} inequalities`
+        : `OFF · ${coneConstraintCount} inequalities`;
       const improvement = d.initialCost > 0 ? clamp(1 - d.finalCost / d.initialCost, 0, 1) : 0;
       $('costTrackFill').style.width = `${Math.max(3, improvement * 100)}%`;
       $('convergencePill').textContent = d.alpha > 0 ? 'STEP ACCEPTED' : 'STATIONARY';
       $('convergencePill').classList.toggle('good', d.alpha > 0 || d.residual < 1e-4);
-      $('solverMessage').textContent = `Nonlinear cost ${formatNumber(d.initialCost)} → ${formatNumber(d.finalCost)}; terminal velocity angle ${d.terminalConeAngle.toFixed(1)}° ${config.terminalCone ? '(30° cone enabled)' : '(cost tracking only)'}.`;
+      $('solverMessage').textContent = `Nonlinear cost ${formatNumber(d.initialCost)} → ${formatNumber(d.finalCost)}; maximum predicted corridor angle ${d.maxTrajectoryConeAngle.toFixed(1)}° ${config.trajectoryCone ? `(${coneAngleDegrees.toFixed(0)}° cone enabled, ${coneConstraintCount} OCP inequalities)` : '(unconstrained, 0 cone inequalities)'}.`;
     }
     const warning = state.solveMs > config.dt * 1000;
     $('solverBadge').classList.toggle('warning', warning);
@@ -502,7 +562,7 @@
     $('randomizeBtn').addEventListener('click', () => resetSimulation(true));
     $('defaultsBtn').addEventListener('click', () => {
       Object.entries(defaultValues).forEach(([key, value]) => { if ($(key)) $(key).value = value; });
-      $('terminalCone').checked = true;
+      $('trajectoryCone').checked = true;
       updateSliderOutputs();
       resetSimulation(false);
     });
@@ -517,6 +577,25 @@
       input.addEventListener('input', () => {
         updateSliderOutputs();
         window.clearTimeout(deferredSolve);
+        const activeConeConfigurationChanged = input === $('trajectoryCone')
+          || (input === $('coneAngle') && $('trajectoryCone').checked);
+        if (activeConeConfigurationChanged) {
+          const config = readConfig();
+          const initialAdjusted = (state.finished || state.replayMode || state.time < 1e-9)
+            && makeStoredInitialConeCompatible(config);
+          // A completed/replayed path belongs to the old OCP and cannot be
+          // changed retroactively. Re-form it from the stored initial state,
+          // projecting that state inside a newly tightened cone if necessary.
+          // During a live or paused run, apply the new OCP immediately.
+          if (state.finished || state.replayMode || initialAdjusted) {
+            resetSimulation(false);
+          } else {
+            state.mpcAccumulator = 0;
+            solveMPC();
+            renderAll();
+          }
+          return;
+        }
         deferredSolve = window.setTimeout(() => {
           if (!state.running && !state.finished) {
             const config = readConfig();
@@ -543,13 +622,22 @@
     $('horizon').value = String(Math.round(clamp(+launchOptions.get('horizon') || 1, 1, 70)));
     resetSimulation(false);
   }
+  if (launchOptions.has('coneAngle')) {
+    $('coneAngle').value = String(clamp(+launchOptions.get('coneAngle') || defaultValues.coneAngle, 15, 90));
+    resetSimulation(false);
+  }
   if (launchOptions.get('constraint') === 'off') {
-    $('terminalCone').checked = false;
+    $('trajectoryCone').checked = false;
     solveMPC();
     renderAll();
   }
   if (launchOptions.get('verify') === '1') {
-    state.initial = [4.5, 8, 0, 0, rad(12), 0];
+    const verifyConfig = readConfig();
+    const verifyAltitude = 8;
+    const coneCompatibleOffset = verifyConfig.trajectoryCone
+      ? Math.min(4.5, 0.75 * verifyAltitude * Math.tan(verifyConfig.coneHalfAngle))
+      : 4.5;
+    state.initial = [coneCompatibleOffset, verifyAltitude, 0, 0, rad(12), 0];
     resetSimulation(false);
     for (let k = 0; k < 4000 && !state.finished; k++) simulationStep();
     renderAll();

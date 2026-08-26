@@ -143,7 +143,7 @@ input[type="range"] { grid-column: 1 / 3; width: 100%; height: 3px; margin: 4px 
 .legend span::before { content: ""; display: inline-block; width: 15px; height: 2px; margin: 0 5px 2px 0; }
 .legend .actual::before { background: var(--orange); }
 .legend .predicted::before { border-top: 2px dashed var(--teal); }
-.legend .target::before { background: var(--yellow); }
+.legend .corridor::before { border-top: 2px dashed var(--yellow); }
 .canvas-wrap { position: relative; min-width: 0; }
 .flight-wrap { height: 550px; background: #edf2ef; }
 .chart-wrap { height: 213px; }

@@ -198,6 +198,21 @@ $$
 J(U;\hat{x})=J_x+J_u+J_{\mathrm{ground}}.
 $$
 
+### Simplified cost
+$$
+x_{ref} = [p_x^*,0,0,0,0,0]
+$$
+$$
+J_k = W_p(p_{x,k}-p_x^*)^2 + W_p(p_{z,k}-0)^2 \\
++ W_v(v_{x,k}-0)^2 + W_v(v_{y,k}-0)^2 \\
++ W_\theta(\theta_k-0)^2 + W_{\omega}(\omega_k-0)^2\\
+W_\delta(\delta_k-0)^2 + W_T(T_k-0)^2 
+$$
+
+$$
+J(X,U) = \sum_{k=0}^{N-1}\left[(x_k-x_{ref})^\top W_x (x_k-x_{ref}) + (u_k-u_{ref})^\top W_u (u_k-u_{ref})\right] \\
+ + (x_N-x_{ref})^\top W_x (x_N-x_{ref})
+$$
 ### 5.4 OCP constraints
 
 The nonlinear OCP solved at each sample is
@@ -205,43 +220,60 @@ The nonlinear OCP solved at each sample is
 $$
 \begin{aligned}
 \underset{x_1,\ldots,x_N,\,u_0,\ldots,u_{N-1}}{\operatorname{minimize}}
-\quad &J(U;\hat{x})\\
+\quad &J(X,U)\\
 \text{subject to}\quad
 &x_0=\hat{x},\\
-&x_{k+1}=f_d(x_k,u_k), &&k=0,\ldots,N-1,\\
+&x_{k+1}=f_c(x_k,u_k), &&k=0,\ldots,N-1,\\
 &0\leq T_k\leq T_{\max}, &&k=0,\ldots,N-1,\\
 &-\delta_{\max}\leq\delta_k\leq\delta_{\max}, &&k=0,\ldots,N-1.
 \end{aligned}
 $$
 
-When the **30° landing velocity cone** is enabled, define its half-angle as
-
-$$
-\gamma=30^\circ.
-$$
-
-The terminal velocity must point downward and remain inside the cone:
-
-$$
-|v_{x,N}|\leq -v_{z,N}\tan\gamma.
-$$
-
-Equivalently, the OCP adds the two inequalities
 
 $$
 \begin{aligned}
-v_{x,N}+\tan\gamma\,v_{z,N} &\leq 0,\\
--v_{x,N}+\tan\gamma\,v_{z,N} &\leq 0.
+\underset{x_1,\ldots,x_N,\,u_0,\ldots,u_{N-1}}{\operatorname{minimize}}
+\quad &J(U;\hat{x})\\
+\text{subject to}\quad
+&x_0=\hat{x},\\
+&x_{k+1}=f_c(x_k,u_k), &&k=0,\ldots,N-1,\\
+&0\leq T_k\leq T_{\max}, &&k=0,\ldots,N-1,\\
+&-\delta_{\max}\leq\delta_k\leq\delta_{\max}, &&k=0,\ldots,N-1.
 \end{aligned}
 $$
 
-For $v_{x,N}\neq0$, this is also the requested velocity-ratio condition
+When the **landing-site cone** is enabled, its configurable half-angle satisfies
 
 $$
-\frac{-v_{z,N}}{|v_{x,N}|}\geq\cot30^\circ=\sqrt{3}.
+\gamma\in[15^\circ,90^\circ].
 $$
 
-The zero-velocity reference remains in the objective, so the cone determines the allowed approach direction while the cost drives the terminal speed toward zero. When the toggle is off, both velocity components are regulated only by the cost.
+Every predicted position must remain inside the upward cone whose apex is the landing target:
+
+$$
+\cos\gamma\,|p_{x,k}-p_x^\star|\leq \sin\gamma\,p_{z,k},
+\qquad k=1,\ldots,N.
+$$
+
+For $\gamma<90^\circ$, this is equivalent to
+$|p_{x,k}-p_x^\star|\leq p_{z,k}\tan\gamma$. The sine/cosine form is used
+in the implementation because it remains numerically well-conditioned at
+$\gamma=90^\circ$.
+
+Equivalently, the OCP adds two inequalities at every prediction node:
+
+$$
+\begin{aligned}
+\cos\gamma\,(p_{x,k}-p_x^\star)-\sin\gamma\,p_{z,k} &\leq 0,\\
+-\cos\gamma\,(p_{x,k}-p_x^\star)-\sin\gamma\,p_{z,k} &\leq 0.
+\end{aligned}
+$$
+
+At $\gamma=90^\circ$, the lateral coefficient is zero and the condition
+reduces to $p_{z,k}\geq0$: the cone imposes no lateral restriction but still
+prevents predicted nodes from passing below the landing surface.
+
+Satisfying both cone faces also implies $p_{z,k}\geq0$, so the enabled spatial cone prevents predicted nodes from passing below the landing surface. The constraint is applied at the discrete MPC nodes; the plant is still integrated at the finer $0.01$ s simulation step.
 
 ## 6. SQP approximation used in the controller
 
@@ -285,22 +317,23 @@ $$
 \end{aligned}
 $$
 
-For each sign $\sigma\in\{-1,+1\}$, define
+For each prediction node $k=1,\ldots,N$ and sign $\sigma\in\{-1,+1\}$, define
 
 $$
-c_\sigma(x_N)=\sigma v_{x,N}+\tan\gamma\,v_{z,N}.
+c_{\sigma,k}(x_k)=
+\sigma\cos\gamma\,(p_{x,k}-p_x^\star)-\sin\gamma\,p_{z,k}.
 $$
 
-The optional cone constraint is linearized and condensed into the QP as
+The optional cone constraints are linearized and condensed into the QP as
 
 $$
-a_\sigma^{\mathsf T}d\leq-c_\sigma(\bar x_N),
+a_{\sigma,k}^{\mathsf T}d\leq-c_{\sigma,k}(\bar x_k),
 \qquad
-a_\sigma^{\mathsf T}=
-\left(\sigma e_{v_x}+\tan\gamma\,e_{v_z}\right)^{\mathsf T}S_N.
+a_{\sigma,k}^{\mathsf T}=
+\left(\sigma\cos\gamma\,e_{p_x}-\sin\gamma\,e_{p_z}\right)^{\mathsf T}S_k.
 $$
 
-The code solves the box-constrained QP using projected coordinate descent. The cone inequalities are handled using augmented-Lagrangian iterations followed by alternating weighted projections onto the two half-spaces while preserving the input box bounds.
+The code solves the box-constrained QP using projected coordinate descent. Its $2N$ cone inequalities are handled using augmented-Lagrangian iterations followed by alternating weighted projections onto the half-spaces while preserving the input box bounds.
 
 Finally, a backtracking line search updates
 
@@ -310,11 +343,12 @@ U^{+}=\bar U+\alpha d,
 \alpha\in\left\{1,\frac12,\frac14,\frac18,\frac1{16}\right\}.
 $$
 
-With the terminal cone enabled, the line search uses the merit function
+With the trajectory cone enabled, the line search uses the merit function
 
 $$
 \Psi(U)=J(U)+\rho_c
-\left[\max\!\left(0,|v_{x,N}|+\tan\gamma\,v_{z,N}\right)\right]^2,
+\sum_{k=1}^{N}
+\left[\max\!\left(0,\cos\gamma\,|p_{x,k}-p_x^\star|-\sin\gamma\,p_{z,k}\right)\right]^2,
 \qquad \rho_c=10000.
 $$
 

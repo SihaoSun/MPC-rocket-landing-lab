@@ -267,7 +267,7 @@
 
     // Alternating weighted projections enforce the linearized landing-cone
     // half-spaces while retaining every input box bound.
-    for (let pass = 0; pass < 10 && constraints.length; pass++) {
+    for (let pass = 0; pass < 40 && constraints.length; pass++) {
       maxLinearViolation = 0;
       for (const constraint of constraints) {
         const direction = new Float64Array(n);
@@ -324,6 +324,25 @@
     return shifted;
   }
 
+  function trajectoryConeMetrics(states, config) {
+    const coneCosine = Math.max(0, Math.cos(config.coneHalfAngle));
+    const coneSine = Math.sin(config.coneHalfAngle);
+    let violationSquared = 0;
+    let maxViolation = 0;
+    let maxAngle = 0;
+    for (let k = 1; k < states.length; k++) {
+      const lateral = Math.abs(states[k][0] - config.targetX);
+      const altitude = states[k][1];
+      const violation = Math.max(0, coneCosine * lateral - coneSine * altitude);
+      violationSquared += violation * violation;
+      maxViolation = Math.max(maxViolation, violation);
+      const distance = Math.hypot(lateral, altitude);
+      const angle = distance < 1e-9 ? 0 : Math.atan2(lateral, altitude) * 180 / Math.PI;
+      if (distance > 0.02) maxAngle = Math.max(maxAngle, angle);
+    }
+    return { violationSquared, maxViolation, maxAngle };
+  }
+
   class SQPMPC {
     constructor(config) {
       this.config = { ...config };
@@ -340,7 +359,17 @@
     solve(x, nextConfig) {
       const config = { ...nextConfig };
       const requiredLength = config.horizon * NU;
+      const coneModeChanged = this.U && (
+        Boolean(this.config.trajectoryCone) !== Boolean(config.trajectoryCone)
+        || (config.trajectoryCone
+          && Math.abs(this.config.coneHalfAngle - config.coneHalfAngle) > 1e-12)
+      );
       if (!this.U || this.U.length !== requiredLength) this.reset(x, config);
+      else if (coneModeChanged) {
+        // Start from a neutral guess when the feasible set changes. Keep
+        // previousU so the smoothing cost stays tied to the applied input.
+        this.U = makeInitialGuess(x, config);
+      }
       this.config = config;
       let U = this.U;
       let lastResidual = Infinity;
@@ -349,6 +378,7 @@
       let initialCost = Infinity;
       let finalCost = Infinity;
       let lastLinearViolation = 0;
+      let lastLinearConstraintCount = 0;
       const lower = new Float64Array(U.length);
       const upper = new Float64Array(U.length);
 
@@ -358,20 +388,23 @@
         if (iter === 0) initialCost = cost;
         const qp = buildQP(data.states, data.sensitivities, U, config, this.previousU);
         const linearConstraints = [];
-        if (config.terminalCone) {
-          const terminalSensitivity = data.sensitivities[config.horizon];
-          const terminalState = data.states[config.horizon];
-          const tanCone = Math.tan(config.coneHalfAngle);
-          for (const sign of [1, -1]) {
-            const a = new Float64Array(U.length);
-            for (let j = 0; j < U.length; j++) {
-              a[j] = sign * terminalSensitivity[2 * U.length + j]
-                + tanCone * terminalSensitivity[3 * U.length + j];
+        if (config.trajectoryCone) {
+          const coneCosine = Math.max(0, Math.cos(config.coneHalfAngle));
+          const coneSine = Math.sin(config.coneHalfAngle);
+          for (let k = 1; k <= config.horizon; k++) {
+            const sensitivity = data.sensitivities[k];
+            const predictedState = data.states[k];
+            for (const sign of [1, -1]) {
+              const a = new Float64Array(U.length);
+              for (let j = 0; j < U.length; j++) {
+                a[j] = sign * coneCosine * sensitivity[j] - coneSine * sensitivity[U.length + j];
+              }
+              const value = sign * coneCosine * (predictedState[0] - config.targetX) - coneSine * predictedState[1];
+              linearConstraints.push({ a, b: -value });
             }
-            const value = sign * terminalState[2] + tanCone * terminalState[3];
-            linearConstraints.push({ a, b: -value });
           }
         }
+        lastLinearConstraintCount = linearConstraints.length;
         for (let k = 0; k < config.horizon; k++) {
           lower[k * NU] = -U[k * NU];
           upper[k * NU] = config.maxThrust - U[k * NU];
@@ -382,9 +415,8 @@
         lastResidual = solution.residual;
         lastLinearViolation = solution.linearViolation;
         let bestCost = cost;
-        const coneTangent = Math.tan(config.coneHalfAngle);
-        const initialConeViolation = Math.max(0, Math.abs(data.states[config.horizon][2]) + coneTangent * data.states[config.horizon][3]);
-        let bestMerit = cost + (config.terminalCone ? 10000 * initialConeViolation ** 2 : 0);
+        const initialConeMetrics = trajectoryConeMetrics(data.states, config);
+        let bestMerit = cost + (config.trajectoryCone ? 10000 * initialConeMetrics.violationSquared : 0);
         let bestU = U;
         acceptedAlpha = 0;
         for (const alpha of [1, 0.5, 0.25, 0.125, 0.0625]) {
@@ -392,9 +424,8 @@
           for (let i = 0; i < U.length; i++) candidate[i] = U[i] + alpha * solution.step[i];
           const candidateStates = rollout(x, candidate, config, false).states;
           const candidateCost = evaluateCost(candidateStates, candidate, config, this.previousU);
-          const candidateTerminal = candidateStates[config.horizon];
-          const candidateConeViolation = Math.max(0, Math.abs(candidateTerminal[2]) + coneTangent * candidateTerminal[3]);
-          const candidateMerit = candidateCost + (config.terminalCone ? 10000 * candidateConeViolation ** 2 : 0);
+          const candidateConeMetrics = trajectoryConeMetrics(candidateStates, config);
+          const candidateMerit = candidateCost + (config.trajectoryCone ? 10000 * candidateConeMetrics.violationSquared : 0);
           if (candidateMerit < bestMerit - 1e-8) {
             bestCost = candidateCost;
             bestMerit = candidateMerit;
@@ -419,9 +450,7 @@
       }
       const terminal = prediction[prediction.length - 1];
       const terminalError = Math.hypot(terminal[0] - config.targetX, terminal[1], terminal[2], terminal[3], 2 * terminal[4]);
-      const terminalSpeed = Math.hypot(terminal[2], terminal[3]);
-      const terminalConeAngle = terminalSpeed < 1e-8 ? 0 : Math.atan2(Math.abs(terminal[2]), -terminal[3]) * 180 / Math.PI;
-      const terminalConeViolation = Math.max(0, Math.abs(terminal[2]) + Math.tan(config.coneHalfAngle) * terminal[3]);
+      const coneMetrics = trajectoryConeMetrics(prediction, config);
       this.U = U;
       return {
         u: [U[0], U[1]],
@@ -429,8 +458,10 @@
         prediction,
         diagnostics: {
           initialCost, finalCost, residual: lastResidual, alpha: acceptedAlpha, iterations: iterationsDone,
-          active, terminalError, terminalVx: terminal[2], terminalVz: terminal[3], terminalConeAngle,
-          terminalConeViolation, linearViolation: lastLinearViolation
+          active, terminalError, terminalVx: terminal[2], terminalVz: terminal[3],
+          maxTrajectoryConeAngle: coneMetrics.maxAngle, maxTrajectoryConeViolation: coneMetrics.maxViolation,
+          linearViolation: lastLinearViolation, coneConstraintCount: lastLinearConstraintCount,
+          coneWarmStartReset: Boolean(coneModeChanged)
         }
       };
     }
